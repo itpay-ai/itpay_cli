@@ -106,6 +106,32 @@ Run without installing globally:
 npx itpay_cli --version
 ```
 
+## Agent First Step
+
+If you are an AI agent, read the packaged VoltaGent skill before creating
+checkouts, asking the user to pay, installing runtime config, or diagnosing a
+grant:
+
+```bash
+itp skill show
+```
+
+For machine-readable access:
+
+```bash
+itp skill show --json
+```
+
+To locate the installed skill file:
+
+```bash
+itp skill path
+```
+
+The skill is the canonical agent runbook for safe payment, credential, install,
+and diagnosis behavior. Follow it exactly, especially the rules about `--json`,
+`--password-stdin`, verified payment status, and never exposing secrets.
+
 ## Install From This Repo
 
 ```bash
@@ -244,7 +270,15 @@ itp install openclaw --grant <grant_id> --json
 
 ## Agent Skill
 
-Skill file:
+Installed agents can read the full skill at any time:
+
+```bash
+itp skill show
+itp skill show --json
+itp skill path
+```
+
+Repository skill file:
 
 ```text
 skills/voltagent/SKILL.md
@@ -357,6 +391,7 @@ Post-publish install test:
 TMP_PREFIX=$(mktemp -d)
 npm install -g --prefix "$TMP_PREFIX" itpay_cli
 "$TMP_PREFIX/bin/itp" --version
+"$TMP_PREFIX/bin/itp" skill show --json
 "$TMP_PREFIX/bin/itpay" --version
 "$TMP_PREFIX/bin/itpay_cli" --version
 ```

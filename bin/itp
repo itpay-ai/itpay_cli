@@ -5,13 +5,17 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-const VERSION = "0.1.0";
+const VERSION = "0.1.2";
 const DEFAULT_API_BASE = process.env.VOLTAGENT_API_BASE || "http://localhost:3000";
 const CONFIG_DIR = path.join(os.homedir(), ".itp");
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 const STATE_PATH = path.join(CONFIG_DIR, "state.json");
 const CREDENTIALS_PATH = path.join(CONFIG_DIR, "credentials.json");
+const CLI_FILE = fileURLToPath(import.meta.url);
+const CLI_DIR = path.dirname(CLI_FILE);
+const PACKAGE_ROOT = path.dirname(CLI_DIR);
 
 main().catch((error) => {
   outputError(error);
@@ -42,6 +46,12 @@ async function main() {
   }
   if (group === "doctor") {
     await doctor(parseFlags(args.slice(1)));
+    return;
+  }
+  if (group === "skill") {
+    const skillCommand = command && !String(command).startsWith("--") ? command : "show";
+    const skillFlags = parseFlags(command && String(command).startsWith("--") ? args.slice(1) : rest);
+    await skill(skillCommand, skillFlags);
     return;
   }
   if (group === "keys") {
@@ -157,6 +167,9 @@ async function main() {
           "keys revoke --grant <grant_id>",
           "token issue --grant <grant_id> --stdout",
           "sync",
+          "skill show",
+          "skill show --json",
+          "skill path",
           "admin orders --access-token <root_token> --new-api-user <id>",
           "admin payment-events --access-token <root_token> --new-api-user <id>",
           "admin outbox --access-token <root_token> --new-api-user <id>",
@@ -624,6 +637,42 @@ async function doctor(flags) {
     session_credential_store: credentials.session_token_store || (credentials.session_token ? "file" : null),
     session_credential_warning: credentials.session_token_warning || undefined
   });
+}
+
+async function skill(command, flags) {
+  const skillPath = resolveSkillPath();
+  if (!command || command === "show" || command === "read") {
+    const content = fs.readFileSync(skillPath, "utf8");
+    if (flags.json) {
+      output({ skill: "voltagent", path: skillPath, content });
+    } else {
+      process.stdout.write(content.endsWith("\n") ? content : `${content}\n`);
+    }
+    return;
+  }
+  if (command === "path") {
+    if (flags.json) {
+      output({ skill: "voltagent", path: skillPath });
+    } else {
+      process.stdout.write(`${skillPath}\n`);
+    }
+    return;
+  }
+  throw new Error(`unknown skill command: ${command}`);
+}
+
+function resolveSkillPath() {
+  const candidates = [
+    process.env.ITPAY_CLI_SKILL_PATH,
+    path.join(PACKAGE_ROOT, "skills", "voltagent", "SKILL.md"),
+    path.join(path.dirname(CLI_DIR), "share", "itpay_cli", "skills", "voltagent", "SKILL.md"),
+    path.join(process.cwd(), "skills", "voltagent", "SKILL.md")
+  ].filter(Boolean);
+  const found = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!found) {
+    throw new Error(`VoltaGent skill file not found. Checked: ${candidates.join(", ")}`);
+  }
+  return found;
 }
 
 async function doctorModelCheck(target, credentials) {
