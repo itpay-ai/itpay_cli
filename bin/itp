@@ -70,6 +70,14 @@ async function main() {
     await admin(command, rest, parseFlags(rest));
     return;
   }
+  if (group === "auth" && command === "device") {
+    const deviceFlags = parseFlags(rest.slice(1));
+    if (rest[0] === "poll" && rest[1] && !String(rest[1]).startsWith("--")) {
+      deviceFlags.auth_id = rest[1];
+    }
+    await authDevice(rest[0], deviceFlags);
+    return;
+  }
 
   switch (`${group || ""} ${command || ""}`.trim()) {
     case "auth register":
@@ -143,6 +151,8 @@ async function main() {
         commands: [
           "auth register",
           "auth login",
+          "auth device start",
+          "auth device poll <auth_id>",
           "auth status",
           "account show",
           "account login-link",
@@ -183,12 +193,36 @@ async function main() {
 }
 
 async function authRegister(flags) {
+  const start = await startDeviceAuth(flags);
+  if (flags.no_wait) {
+    writeState({ ...readState(), last_auth_id: start.auth_id });
+    output(start);
+    return;
+  }
+  if (flags.mock_approve || process.env.ITPAY_MOCK_APPROVE === "true" || process.env.ITPAY_MOCK_APPROVE === "1") {
+    const alipayUserId = flags.alipay_user_id || process.env.ITPAY_MOCK_ALIPAY_USER_ID || `2088${crypto.randomInt(100000000000, 999999999999)}`;
+    await api(`/api/itp/auth/device/${encodeURIComponent(start.auth_id)}/mock-approve`, {
+      method: "POST",
+      body: { alipay_user_id: alipayUserId }
+    }, flags);
+  }
+  const response = await waitDeviceAuth(start.auth_id, flags, start);
+  writeSessionCredentials(response.auth);
+  writeConfig({
+    api_base: apiBase(flags),
+    account_id: response.auth.account_id,
+    device_id: response.auth.device_id,
+    web_console_url: response.auth.web_console_url
+  });
+  writeState({ ...readState(), last_auth_id: start.auth_id });
+  output({ ...sanitizeAuthResponse(response.auth), auth_id: start.auth_id, status: response.status });
+}
+
+async function startDeviceAuth(flags) {
   const runtime = flags.runtime || "unknown";
-  const response = await api("/api/itp/auth/register", {
+  return await api("/api/itp/auth/device/start", {
     method: "POST",
     body: {
-      username: flags.username || undefined,
-      email: flags.email || undefined,
       device: {
         display_name: os.hostname(),
         runtime,
@@ -198,14 +232,61 @@ async function authRegister(flags) {
       }
     }
   }, flags);
-  writeSessionCredentials(response);
-  writeConfig({
-    api_base: apiBase(flags),
-    account_id: response.account_id,
-    device_id: response.device_id,
-    web_console_url: response.web_console_url
-  });
-  output(sanitizeAuthResponse(response));
+}
+
+async function authDevice(command, flags) {
+  if (command === "start") {
+    const response = await startDeviceAuth(flags);
+    writeState({ ...readState(), last_auth_id: response.auth_id });
+    output(response);
+    return;
+  }
+  if (command === "poll") {
+    const authId = flags.auth_id || flags.device_auth_id || readState().last_auth_id;
+    if (!authId) throw new Error("auth_id is required");
+    const response = await waitDeviceAuth(authId, flags);
+    if (response.auth) {
+      writeSessionCredentials(response.auth);
+      writeConfig({
+        api_base: apiBase(flags),
+        account_id: response.auth.account_id,
+        device_id: response.auth.device_id,
+        web_console_url: response.auth.web_console_url
+      });
+    }
+    output(response.auth ? { ...sanitizeAuthResponse(response.auth), auth_id: authId, status: response.status } : response);
+    return;
+  }
+  throw new Error(`unknown auth device command: ${command || ""}`);
+}
+
+async function waitDeviceAuth(authId, flags, start = null) {
+  const started = Date.now();
+  const timeoutMs = Number(flags.timeout || 600) * 1000;
+  let intervalMs = 2000;
+  if (start) {
+    process.stderr.write(`Open Alipay auth URL: ${start.verification_uri_complete || start.alipay_authorization_url}\n`);
+    if (start.user_code) process.stderr.write(`Alipay auth code: ${start.user_code}\n`);
+  }
+  while (Date.now() - started < timeoutMs) {
+    const response = await api(`/api/itp/auth/device/${encodeURIComponent(authId)}/poll`, { method: "POST" }, flags);
+    if (response.auth?.session_token) {
+      return response;
+    }
+    if (response.status === "authorization_pending") {
+      intervalMs = Number(response.interval || 2) * 1000;
+      await sleep(intervalMs);
+      continue;
+    }
+    if (response.status === "approved") {
+      return response;
+    }
+    if (response.status === "expired" || response.status === "consumed" || response.error) {
+      throw new Error(response.error || `device auth ended with status: ${response.status}`);
+    }
+    await sleep(intervalMs);
+  }
+  throw new Error(`device auth timed out; run \`itp auth device poll ${authId} --timeout 600\``);
 }
 
 async function authLogin(flags) {

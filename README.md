@@ -160,13 +160,22 @@ Set API endpoint if not using local backend:
 export VOLTAGENT_API_BASE=https://your-api.example.com
 ```
 
-Register an agent-native account:
+Start Alipay-bound agent authentication:
 
 ```bash
 itp auth register --runtime codex --json
 ```
 
-The response includes the actual saved `username`. Keep it if you plan to log in later with a password.
+The CLI prints the Alipay verification URL and code to stderr, waits for the
+scan approval, stores the returned session, and then returns the saved account
+metadata as JSON. For local fake-auth testing:
+
+```bash
+itp auth register --runtime codex --mock-approve --json
+```
+
+The response includes the actual saved `username`. Keep it if you plan to log in
+later with a password.
 
 Set the first Web login password:
 
@@ -405,11 +414,14 @@ GET  /api/status
 GET  /api/itp/plans
 POST /api/itp/auth/register
 POST /api/itp/auth/login
+POST /api/itp/auth/device/start
+POST /api/itp/auth/device/:auth_id/poll
 GET  /api/itp/auth/status
 GET  /api/itp/account
 POST /api/itp/account/password
 POST /api/itp/checkout
 GET  /api/itp/checkout/:id
+POST /api/itp/payments/alipay/notify
 GET  /api/itp/orders
 GET  /api/itp/balance
 GET  /api/itp/usage

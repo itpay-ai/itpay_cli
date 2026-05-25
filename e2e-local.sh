@@ -46,7 +46,7 @@ curl -fsS "$API_BASE/api/itp/plans" | json_assert "return v.success === true && 
 
 USERNAME="e2e-$(date +%Y%m%d%H%M%S)-$$"
 printf 'registering %s\n' "$USERNAME" >&2
-AUTH=$(itp auth register --username "$USERNAME" --runtime codex --json)
+AUTH=$(itp auth register --runtime codex --mock-approve --alipay-user-id "2088$RANDOM$RANDOM" --json)
 printf '%s' "$AUTH" | json_assert "return v.account_id && v.device_id && v.session_stored === true"
 
 ACCOUNT=$(itp account show --json)

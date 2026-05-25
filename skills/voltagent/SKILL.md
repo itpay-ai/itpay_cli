@@ -102,14 +102,22 @@ itp auth status --json
 
 If `authenticated=true`, continue.
 
-If not authenticated, register an agent-native account:
+If not authenticated, start the Alipay-bound device auth flow:
 
 ```bash
 itp auth register --runtime <target> --json
 ```
 
-Important: the response includes the actual saved `username`. If the user wants
-password login later, tell them the returned username.
+The CLI prints the Alipay verification URL and user code to stderr, keeps
+polling, and stores the returned session after the user scans and approves.
+Do not ask the user to paste credentials. The returned JSON includes the saved
+`username`; if the user wants password login later, tell them that username.
+
+For local fake-auth testing only:
+
+```bash
+itp auth register --runtime <target> --mock-approve --json
+```
 
 If the user asks to log into an existing account:
 
