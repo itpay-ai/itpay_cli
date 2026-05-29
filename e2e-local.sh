@@ -50,10 +50,10 @@ json_assert() {
 
 printf 'checking server %s\n' "$API_BASE" >&2
 curl -fsS "$API_BASE/api/status" >/dev/null
-curl -fsS "$API_BASE/api/itp/plans" | json_assert "return v.success === true && v.data.plans.some(p => p.plan_id === 'coding-100')" >/dev/null
+curl -fsS "$API_BASE/api/itp/plans" | json_assert "return v.success === true && v.data.plans.some(p => p.plan_id === 'credit-100') && v.data.unit_rule === '1 credit = 1 CNY'" >/dev/null
 
 printf 'running one-command setup flow\n' >&2
-SETUP=$(itp_home "$TMP_SETUP_HOME" setup --plan coding-100 --method fake --mock-approve --offline --json)
+SETUP=$(itp_home "$TMP_SETUP_HOME" setup --credits 100 --method fake --mock-approve --allow-fake --offline --json)
 printf '%s' "$SETUP" | json_assert "return v.status === 'grant_ready' && v.target === 'generic' && v.grant_id && v.base_url && v.openai_base_url && v.credential && v.credential.stored === true && v.auth && v.auth.session_stored === true && v.runtime_install.status === 'skipped'"
 test ! -f "$TMP_SETUP_HOME/.codex/config.toml"
 TOKEN_FROM_SETUP=$(HOME="$TMP_SETUP_HOME" PATH=/nonexistent VOLTAGENT_API_BASE="$API_BASE" "$NODE" "$ROOT/bin/itp" token issue --grant "$(printf '%s' "$SETUP" | json_get grant_id)" --stdout)
@@ -63,12 +63,16 @@ case "$TOKEN_FROM_SETUP" in
 esac
 
 printf 'checking setup no-wait auth handoff\n' >&2
-SETUP_NOWAIT=$(itp_home "$TMP_SETUP_NOWAIT_HOME" setup --plan coding-100 --method fake --no-wait --json)
-printf '%s' "$SETUP_NOWAIT" | json_assert "return v.status === 'waiting_human_auth' && v.action === 'scan_alipay_auth' && v.auth_id && v.user_code && v.verification_uri_complete"
+SETUP_NOWAIT=$(itp_home "$TMP_SETUP_NOWAIT_HOME" setup --credits 100 --method fake --allow-fake --no-wait --json)
+printf '%s' "$SETUP_NOWAIT" | json_assert "return v.status === 'waiting_human_auth' && v.action === 'scan_alipay_auth' && v.run_id && v.auth_id && v.user_code && v.verification_uri_complete && v.human_action && v.human_action.display.length > 0"
+SETUP_NOWAIT_STATUS=$(itp_home "$TMP_SETUP_NOWAIT_HOME" status --json)
+printf '%s' "$SETUP_NOWAIT_STATUS" | json_assert "return v.status === 'waiting_human_auth' && v.run_id && v.auth_id && v.next && v.next.command.includes('resume')"
+SETUP_RESUMED=$(itp_home "$TMP_SETUP_NOWAIT_HOME" resume --mock-approve --allow-fake --offline --json)
+printf '%s' "$SETUP_RESUMED" | json_assert "return v.status === 'grant_ready' && v.run_id && v.grant_id && v.credential && v.credential.stored === true"
 
 USERNAME="e2e-$(date +%Y%m%d%H%M%S)-$$"
 printf 'registering %s\n' "$USERNAME" >&2
-AUTH=$(itp auth register --runtime codex --mock-approve --alipay-user-id "2088$RANDOM$RANDOM" --json)
+AUTH=$(itp auth register --runtime codex --mock-approve --allow-fake --alipay-user-id "2088$RANDOM$RANDOM" --json)
 printf '%s' "$AUTH" | json_assert "return v.account_id && v.device_id && v.session_stored === true"
 
 ACCOUNT=$(itp account show --json)
@@ -80,7 +84,7 @@ ACCOUNT=$(itp account show --json)
 printf '%s' "$ACCOUNT" | json_assert "return v.password_set === true"
 
 printf 'creating fake checkout\n' >&2
-CHECKOUT=$(itp checkout create --plan coding-100 --method fake --idempotency-key "e2e-$USERNAME" --json)
+CHECKOUT=$(itp checkout create --credits 100 --method fake --allow-fake --idempotency-key "e2e-$USERNAME" --json)
 CHECKOUT_ID=$(printf '%s' "$CHECKOUT" | json_get checkout_id)
 GRANT_ID=$(printf '%s' "$CHECKOUT" | json_get grant_id)
 printf '%s' "$CHECKOUT" | json_assert "return v.status === 'grant_issued' && v.grant_id && !v.payment.cashier_url"

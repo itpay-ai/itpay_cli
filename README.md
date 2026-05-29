@@ -76,6 +76,13 @@ macOS: security / Keychain
 Linux: secret-tool
 ```
 
+Non-interactive agent hosts such as Codex automatically use file storage to
+avoid OS keychain prompts. To force file storage anywhere:
+
+```bash
+ITP_CREDENTIAL_STORE=file itp setup --credits 100 --method alipay --json
+```
+
 If native credential storage is unavailable, the CLI falls back to:
 
 ```text
@@ -132,6 +139,18 @@ The skill is the canonical agent runbook for safe payment, credential, install,
 and diagnosis behavior. Follow it exactly, especially the rules about `--json`,
 `--password-stdin`, verified payment status, and never exposing secrets.
 
+Before starting a new purchase, agents should inspect recoverable local state:
+
+```bash
+itp status --json
+```
+
+If an unfinished run exists, continue it:
+
+```bash
+itp resume --run-id <run_id> --json
+```
+
 ## Install From This Repo
 
 ```bash
@@ -165,7 +184,7 @@ checkout, wait for verified payment, and deliver the grant/API credential to
 the local `itp` credential store:
 
 ```bash
-itp setup --plan coding-100 --method alipay --json
+itp setup --credits 100 --method alipay --json
 ```
 
 This returns `status=grant_ready` with `base_url`, `openai_base_url`, and the
@@ -175,18 +194,32 @@ config by default.
 Runtime config writing is opt-in:
 
 ```bash
-itp setup --plan coding-100 --target codex --method alipay --install-runtime --json
+itp setup --credits 100 --target codex --method alipay --install-runtime --json
 ```
 
 With `--no-wait`, setup returns `status=waiting_human_auth` before checkout if
 the machine has no valid session, or `status=waiting_human_payment` after
 checkout creation when a payment scan is still required.
 
-For local fake-auth/fake-payment testing:
+QR display is automatic in terminals and machine-readable for chat agents:
 
 ```bash
-itp setup --plan coding-100 --method fake --mock-approve --offline --json
+itp setup --credits 100 --method alipay --display auto --json
+ITP_HOST=discord itp setup --credits 100 --method alipay --display json --json
+ITP_HOST=telegram itp setup --credits 100 --method alipay --display json --json
+ITP_HOST=whatsapp itp setup --credits 100 --method alipay --display json --json
 ```
+
+When interrupted, recover without creating a duplicate checkout:
+
+```bash
+itp status --refresh --json
+itp resume --json
+```
+
+Local and sandbox payment tests use real Alipay sandbox credentials and
+`--method alipay`. Fake/mock/offline flows are developer-only simulation hooks
+and are intentionally omitted from the normal user flow.
 
 Manual flow starts with Alipay-bound agent authentication:
 
@@ -196,11 +229,7 @@ itp auth register --runtime codex --json
 
 The CLI prints the Alipay verification URL and code to stderr, waits for the
 scan approval, stores the returned session, and then returns the saved account
-metadata as JSON. For local fake-auth testing:
-
-```bash
-itp auth register --runtime codex --mock-approve --json
-```
+metadata as JSON.
 
 The response includes the actual saved `username`. Keep it if you plan to log in
 later with a password.
@@ -227,13 +256,7 @@ itp plans --json
 Create a checkout:
 
 ```bash
-itp checkout create --plan coding-100 --method alipay --json
-```
-
-For local development only, when the backend enables fake payment:
-
-```bash
-itp checkout create --plan coding-100 --method fake --idempotency-key manual-test-001 --json
+itp checkout create --credits 100 --method alipay --json
 ```
 
 Wait for verified payment and grant delivery:
@@ -353,7 +376,7 @@ server health
 plans
 auth register
 account password setup
-fake checkout
+Alipay checkout
 payment wait
 grant install
 codex offline install

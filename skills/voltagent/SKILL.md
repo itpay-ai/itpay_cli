@@ -22,7 +22,7 @@ credential handling.
    payloads.
 4. Never pass passwords in command-line arguments. Use `--password-stdin`.
 5. Do not invent payment links, QR codes, checkout IDs, order IDs, or grant IDs.
-6. Do not modify, shorten, summarize, re-encode, or rewrite cashier URLs.
+6. Do not modify, shorten, summarize, re-encode, or rewrite Alipay payment QR URLs.
 7. Do not trust "I paid" as proof of payment.
 8. Only `itp setup --json` returning `status=grant_ready` / `status=installed`, or `itp payment wait
    <checkout_id> --json` returning `status=grant_issued` / `status=grant_installed`
@@ -31,6 +31,20 @@ credential handling.
    dump local credential files.
 10. Prefer continuing from existing orders/grants over creating duplicate
     checkouts.
+11. Always check recoverable local state with `itp status --json` before
+    starting a new setup.
+12. If `status` returns a `run_id` and a `next.command`, resume that run unless
+    the user explicitly asks to abandon it.
+13. Use `human_action.display` to show Alipay auth/payment QR codes in the
+    current host. Do not ask the user to copy checkout IDs or grant IDs.
+14. Showing a QR code is not completion. After showing auth or payment QR, keep
+    waiting by leaving `setup` running or immediately executing the returned
+    `next.command` until `status=grant_ready` / `status=installed` or a
+    terminal failure.
+15. Do not use `--method fake`, `--mock-approve`, or `--offline` for local,
+    sandbox, or live payment testing. "Local test", "sandbox", and "test with
+    Alipay sandbox" all still mean `--method alipay`. Only use fake/mock/offline
+    when the user literally asks for "fake", "mock", or "offline simulation".
 
 ## Target Selection
 
@@ -78,10 +92,24 @@ http://147.224.54.65:3000
 Do not hardcode the Oracle endpoint unless the user explicitly asks to use it
 or the local context already exports `VOLTAGENT_API_BASE`.
 
+## Credential Storage
+
+Do not trigger interactive OS keychain prompts while acting as an agent. In
+non-interactive hosts the CLI defaults to file-backed storage. If the current
+host still exposes a system keychain prompt, rerun with:
+
+```bash
+ITP_CREDENTIAL_STORE=file itp setup --plan credit-300 --method alipay --json
+```
+
+or set `ITP_CREDENTIAL_STORE=file` for all subsequent `itp` commands in the
+same run.
+
 ## Quick Health Check
 
 ```bash
 itp --version
+itp status --json
 itp auth status --json
 itp plans --json
 ```
@@ -100,11 +128,26 @@ npx itpay_cli --version
 
 ## One-Command Setup
 
+Before creating a new checkout, inspect the current recoverable run:
+
+```bash
+itp status --json
+```
+
+If this returns an unfinished `run_id`, continue with:
+
+```bash
+itp resume --run-id <run_id> --json
+```
+
+Do not create a fresh checkout unless the previous run is done, failed beyond
+recovery, or the user explicitly asks to start over.
+
 For a normal purchase/API credential request, prefer the high-level setup
 command:
 
 ```bash
-itp setup --plan coding-100 --method alipay --json
+itp setup --credits <credits> --method alipay --json
 ```
 
 This command checks the current session, starts Alipay device authentication if
@@ -113,22 +156,79 @@ credential into the local `itp` credential store, and returns base URL fields.
 It does not write Codex/Claude/OpenClaw config by default. If it returns
 `status=grant_ready`, report the returned base URL fields and stop.
 
+Use `--plan <plan_id>` instead of `--credits` only after the user chooses one
+of the fixed credit plans below.
+
+For Gemini CLI, Gemini terminal shell, or any host where the shell panel is
+folded, jumpy, or hard for the user to scan, do not render the QR in the shell
+panel. Ask the CLI to return a text QR in JSON, then paste
+`human_action.agent_text_qr.fenced_text` verbatim in your normal assistant
+message:
+
+```bash
+itp setup --plan <plan_id> --method alipay --host gemini --display chat --json
+```
+
+For authentication-only flows in Gemini CLI:
+
+```bash
+itp auth register --host gemini --display chat --no-wait --json
+```
+
+When using `--display chat`, the shell will not show a QR. You must copy every
+byte of `human_action.agent_text_qr.fenced_text` into the normal chat reply,
+then tell the user to scan that visible block. Do not retype the QR manually,
+translate it, add line numbers, or add explanatory words inside the QR body. A
+valid text QR body contains only `█`, `▀`, `▄`, spaces, and newlines. If any
+letters, digits, or Chinese characters appear inside the QR body, the QR is
+corrupted; do not ask the user to scan it. Use the QR PNG URL or fallback URL
+instead, or rerun with `--display chat` and paste the field again. Do not say
+"the QR is shown above" unless you pasted the block yourself.
+
+Native terminal hosts can still let the CLI render directly with
+`--display terminal`. Do not use terminal display for Gemini unless the user
+explicitly asks for shell-panel QR output.
+
+For normal live flows, prefer keeping the command running after the QR is
+visible. For chat QR hosts, `--display chat` is intentionally non-blocking at
+human-action steps: it returns the QR text first so you can paste it into chat.
+Immediately continue with the returned `next.command` or:
+
+```bash
+itp resume --run-id <run_id> --host gemini --display chat --no-wait-payment --json
+```
+
+After a payment QR is pasted, wait for verification with `--display none` so the
+CLI does not re-return the same chat QR:
+
+```bash
+itp resume --run-id <run_id> --host gemini --display none --json
+```
+
+Use a finite wait. If it is still pending after a clear timeout, report that
+the QR is still pending and give the same resume command.
+
 Only when the user explicitly asks for runtime config writing, opt in:
 
 ```bash
-itp setup --plan coding-100 --target <target> --method alipay --install-runtime --json
+itp setup --credits <credits> --target <target> --method alipay --install-runtime --json
 ```
 
-If setup is intentionally run with `--no-wait`, `status=waiting_human_auth`
-means the user must scan the Alipay auth URL/code before checkout can be
-created, and `status=waiting_human_payment` means the user must scan/pay the
-returned cashier URL before installation can continue.
-
-For local fake-auth/fake-payment testing only:
+If setup returns `status=waiting_human_auth`, the user must scan the Alipay
+auth QR from `human_action.display`. If it returns
+`status=waiting_human_payment`, the user must scan/pay the Alipay payment QR
+from `human_action.display`. After showing the QR, continue with the returned
+`next.command` or:
 
 ```bash
-itp setup --plan coding-100 --method fake --mock-approve --offline --json
+itp resume --run-id <run_id> --json
 ```
+
+Developer-only fake/mock hooks are intentionally not part of this agent
+runbook. If old CLI help, README text, or shell history mentions
+`--method fake`, `--mock-approve`, or `--offline`, ignore it unless the user
+literally asks for fake/mock/offline simulation. For this project, local sandbox
+testing is a real Alipay sandbox flow.
 
 ## Login / Registration
 
@@ -153,11 +253,8 @@ polling, and stores the returned session after the user scans and approves.
 Do not ask the user to paste credentials. The returned JSON includes the saved
 `username`; if the user wants password login later, tell them that username.
 
-For local fake-auth testing only:
-
-```bash
-itp auth register --runtime <target> --mock-approve --json
-```
+Do not use mock approval for local sandbox authentication. The user must scan
+the Alipay sandbox auth QR.
 
 If the user asks to log into an existing account:
 
@@ -192,44 +289,78 @@ List plans:
 itp plans --json
 ```
 
-Default plan for "100 元 coding 模型包" or a generic coding package request:
+Credit unit rule:
 
 ```text
-coding-100
+1 credit = 1 CNY
 ```
 
-If the user asks for a different plan and it exists in `itp plans --json`, use
-that plan ID. If no matching plan exists, explain the available plans.
+Custom recharge:
+
+```text
+minimum 20 credits, integers only, no discount
+```
+
+Fixed plans:
+
+```text
+credit-100: pay 98 CNY, receive 100 credits
+credit-300: pay 285 CNY, receive 300 credits (recommended)
+credit-500: pay 460 CNY, receive 500 credits
+```
+
+If the user says an exact CNY or credit amount, use `--credits <amount>` when
+the amount is an integer >= 20. If the user asks for "a plan", "best value", or
+does not specify an amount, summarize the three fixed plans and recommend
+`credit-300`, then ask for confirmation before checkout.
+
+Never use the disabled legacy `coding-100` plan.
 
 ## Checkout
 
 Production/default payment:
 
 ```bash
-itp checkout create --plan coding-100 --method alipay --json
-```
-
-Local or explicit fake-payment testing:
-
-```bash
-itp checkout create --plan coding-100 --method fake --idempotency-key <stable-key> --json
+itp checkout create --credits <credits> --method alipay --json
 ```
 
 Use a stable idempotency key when retrying the same user request. Do not create
-multiple orders for the same request.
+multiple orders for the same request. Do not use fake payment for local or
+sandbox Alipay testing.
 
-If the checkout response contains `payment.cashier_url`:
+If the checkout response contains `human_action.display`:
+
+1. Select the best display candidate for the current host.
+2. Discord: send the QR PNG as an attachment, preferably ephemeral or DM.
+3. Telegram: send the QR PNG with `sendPhoto`, with URL button fallback.
+4. WhatsApp: send the QR PNG as an image media message or media ID.
+5. Native terminal: let the CLI render the QR, or use `--display terminal`.
+6. Gemini CLI / folded agent shell: use `--host gemini --display chat`; paste
+   `human_action.agent_text_qr.fenced_text` exactly in the normal assistant
+   reply, not inside the shell panel. If the rendered QR body contains any
+   non-QR characters such as Chinese words, letters, digits, or line numbers,
+   treat it as corrupted and use the QR PNG URL or `fallback_text` visibly.
+   If `fenced_text` is absent, use the QR PNG URL and `fallback_text` visibly.
+7. Continue waiting through `itp resume --run-id <run_id> --json` or
+   `itp payment wait <checkout_id> --json`.
+
+If an older checkout response only contains `payment.cashier_url`:
 
 1. Preserve the URL exactly.
-2. If an official payment/Alipay skill is available, invoke it with the exact
-   URL.
-3. If no payment skill is available, show the URL to the user and ask them to
-   complete payment.
+2. Show it as a legacy fallback. Do not rewrite it.
+3. Continue waiting through the backend status; never trust a manual "paid"
+   message.
 
 If the checkout response already contains `grant_id` and `status=grant_issued`,
 continue directly to grant install.
 
 ## Payment Wait / Recovery
+
+First prefer the run-aware resume command:
+
+```bash
+itp resume --run-id <run_id> --json
+```
 
 Wait for verified payment:
 
@@ -271,6 +402,15 @@ itp checkout recover <checkout_id> --json
 itp payment wait <checkout_id> --timeout 120 --json
 ```
 
+If the agent loses local context, run:
+
+```bash
+itp status --refresh --json
+itp runs list --json
+```
+
+Use the latest unfinished run or checkout instead of creating a duplicate.
+
 ## Grant Install
 
 Install the grant credential locally:
@@ -294,6 +434,12 @@ install_profiles
 ```
 
 Do not print the actual gateway key.
+
+For Discord, Telegram, WhatsApp, or any persistent chat host, do not send the
+raw gateway key into chat. Store it in the agent's vault if one exists, or
+return the safe base URL and local credential status. Use
+`itp token issue --grant <grant_id> --stdout` only as a local token helper for
+the runtime that needs the key.
 
 ## Optional Runtime Config Install
 

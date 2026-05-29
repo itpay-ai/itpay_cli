@@ -6,6 +6,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import QRCode from "qrcode";
 
 const VERSION = "0.1.2";
 const DEFAULT_API_BASE = process.env.VOLTAGENT_API_BASE || "http://localhost:3000";
@@ -13,6 +14,8 @@ const CONFIG_DIR = path.join(os.homedir(), ".itp");
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 const STATE_PATH = path.join(CONFIG_DIR, "state.json");
 const CREDENTIALS_PATH = path.join(CONFIG_DIR, "credentials.json");
+const RUNS_DIR = path.join(CONFIG_DIR, "runs");
+const LOCK_PATH = path.join(CONFIG_DIR, "state.lock");
 const CLI_FILE = fileURLToPath(import.meta.url);
 const CLI_DIR = path.dirname(CLI_FILE);
 const PACKAGE_ROOT = path.dirname(CLI_DIR);
@@ -46,6 +49,23 @@ async function main() {
   }
   if (group === "setup" || group === "buy") {
     await setup(parseFlags(args.slice(1)));
+    return;
+  }
+  if (group === "status") {
+    await agentStatus(parseFlags(args.slice(1)));
+    return;
+  }
+  if (group === "resume") {
+    await resume(parseFlags(args.slice(1)));
+    return;
+  }
+  if (group === "runs") {
+    const runCommand = command && !String(command).startsWith("--") ? command : "current";
+    const runFlags = parseFlags(command && String(command).startsWith("--") ? args.slice(1) : rest);
+    if (rest[0] && !String(rest[0]).startsWith("--")) {
+      runFlags.run_id = rest[0];
+    }
+    await runs(runCommand, runFlags);
     return;
   }
   if (group === "doctor") {
@@ -154,20 +174,26 @@ async function main() {
         version: VERSION,
         commands: [
           "auth register",
+          "auth register --host gemini --display chat --no-wait --json",
           "auth login",
           "auth device start",
           "auth device poll <auth_id>",
-          "setup --plan coding-100 --method alipay",
-          "setup --plan coding-100 --target codex --method alipay --install-runtime",
-          "setup --plan coding-100 --method fake --mock-approve",
+          "setup --credits 100 --method alipay",
+          "setup --plan credit-300 --method alipay",
+          "setup --plan credit-300 --method alipay --host gemini --display chat --json",
+          "setup --credits 100 --target codex --method alipay --install-runtime",
+          "status --json",
+          "resume --json",
+          "resume --run-id <run_id> --host gemini --display none --json",
+          "runs list|current|show <run_id>|forget <run_id>",
           "auth status",
           "account show",
           "account login-link",
           "account set-password --password-stdin",
           "plans list",
           "plans show <plan>",
-          "checkout create --plan coding-100 --method alipay",
-          "checkout create --plan coding-100 --idempotency-key <uuid>",
+          "checkout create --credits 100 --method alipay",
+          "checkout create --plan credit-300 --method alipay --idempotency-key <uuid>",
           "checkout qr <checkout_id>",
           "checkout open",
           "checkout recover <checkout_id>",
@@ -205,98 +231,325 @@ async function authRegister(flags) {
 }
 
 async function setup(flags) {
-  const target = flags.target || flags.runtime || "generic";
-  const plan = flags.plan || "coding-100";
-  const method = flags.method || "alipay";
-  const setupFlags = { ...flags, runtime: target };
-  const shouldInstallRuntime = Boolean(flags.install_runtime || flags.install_config || flags.write_runtime_config) && !flags.no_runtime_install && !flags.no_install;
-  if (shouldInstallRuntime && target === "generic") {
-    throw new Error("--install-runtime requires --target codex, --target claude-code, or --target openclaw");
-  }
-  const auth = await ensureAuthenticated(setupFlags);
-  if (!auth.authenticated) {
-    output(auth);
-    return;
-  }
-  const checkout = await createCheckoutResult({
-    ...setupFlags,
-    plan,
-    method,
-    idempotency_key: flags.idempotency_key || `setup-${target}-${plan}-${cryptoRandom()}`
-  });
+  return await withStateLock(async () => {
+    const target = flags.target || flags.runtime || "generic";
+    const purchase = normalizePurchaseFlags(flags, true);
+    const plan = purchase.plan || null;
+    const credits = purchase.credits || null;
+    const method = flags.method || "alipay";
+    validateLivePaymentFlags(method, flags);
+    const shouldInstallRuntime = Boolean(flags.install_runtime || flags.install_config || flags.write_runtime_config) && !flags.no_runtime_install && !flags.no_install;
+    if (shouldInstallRuntime && target === "generic") {
+      throw new Error("--install-runtime requires --target codex, --target claude-code, or --target openclaw");
+    }
 
-  if (checkout.payment?.cashier_url) {
-    process.stderr.write(`Open Alipay payment URL: ${checkout.payment.cashier_url}\n`);
-  }
+    let run = prepareSetupRun(flags, { target, plan, credits, method, install_runtime: shouldInstallRuntime });
+    const setupFlags = { ...flags, runtime: target, run_id: run.run_id };
+    if (shouldReturnAfterAgentTextQR(setupFlags)) {
+      setupFlags.no_wait_auth = true;
+      setupFlags.no_wait_payment = true;
+    }
+    run = updateRun(run, { phase: "checking_auth", status: "running", api_base: apiBase(setupFlags) });
 
-  if (!checkout.grant_id && (flags.no_wait_payment || flags.no_wait)) {
-    output({
-      status: "waiting_human_payment",
-      action: "scan_alipay_payment",
+    const auth = await ensureAuthenticated(setupFlags);
+    if (!auth.authenticated) {
+      run = mergeRun(run, {
+        phase: "waiting_human_auth",
+        status: "waiting_human_auth",
+        auth: {
+          auth_id: auth.auth_id,
+          status: "pending",
+          expires_at: auth.expires_at
+        },
+        human_action: auth.human_action || null,
+        safe_summary: "Waiting for Alipay authentication scan."
+      });
+      writeRun(run);
+      output(agentRunResponse(run, {
+        status: "waiting_human_auth",
+        action: "scan_alipay_auth",
+        auth_id: auth.auth_id,
+        user_code: auth.user_code,
+        verification_uri: auth.verification_uri,
+        verification_uri_complete: auth.verification_uri_complete,
+        alipay_authorization_url: auth.alipay_authorization_url,
+        expires_at: auth.expires_at,
+        interval: auth.interval,
+        human_action: auth.human_action,
+        next_action: {
+          type: "show_qr_and_wait",
+          command: resumeCommand(run, setupFlags, { no_wait_payment: Boolean(setupFlags.no_wait_payment) }),
+          retry_after_ms: Number(auth.interval || 2) * 1000
+        }
+      }));
+      return;
+    }
+
+    run = mergeRun(run, {
+      phase: "authenticated",
+      status: "running",
+      account: {
+        authenticated: true,
+        account_id: auth.account_id,
+        device_id: auth.device_id,
+        newapi_user_id: auth.newapi_user_id || null,
+        session_reused: Boolean(auth.session_reused)
+      },
+      auth: {
+        ...(run.auth || {}),
+        status: "consumed"
+      },
+      human_action: null,
+      safe_summary: "Agent device authenticated."
+    });
+    writeRun(run);
+
+    let checkout = run.checkout?.checkout_id
+      ? await api(`/api/itp/checkout/${encodeURIComponent(run.checkout.checkout_id)}`, { method: "GET" }, setupFlags)
+      : null;
+    if (!checkout || isTerminalCheckoutFailure(checkout.status)) {
+      checkout = await createCheckoutResult({
+        ...setupFlags,
+        plan,
+        credits,
+        method,
+        idempotency_key: flags.idempotency_key || run.idempotency_key
+      });
+    }
+
+    run = mergeRun(run, {
+      phase: checkout.grant_id ? "grant_ready" : "waiting_human_payment",
+      status: checkout.grant_id ? "grant_ready" : "waiting_human_payment",
+      plan_id: checkout.plan_id || plan,
+      credits: checkout.credits || credits,
+      purchase_kind: checkout.purchase?.kind || purchase.kind,
+      checkout: {
+        checkout_id: checkout.checkout_id,
+        order_id: checkout.order_id,
+        status: checkout.status,
+        expires_at: checkout.expires_at,
+        purchase: checkout.purchase || null
+      },
+      payment: {
+        provider: method,
+        status: checkout.status
+      },
+      grant: {
+        ...(run.grant || {}),
+        grant_id: checkout.grant_id || run.grant?.grant_id || null
+      },
+      human_action: checkout.human_action || null,
+      safe_summary: checkout.grant_id ? "Payment verified and grant is ready." : "Waiting for Alipay payment scan."
+    });
+    writeRun(run);
+
+    if (checkout.human_action) {
+      await renderHumanAction(checkout.human_action, setupFlags);
+    } else if (checkout.payment?.cashier_url) {
+      process.stderr.write(`Open Alipay payment URL: ${checkout.payment.cashier_url}\n`);
+    }
+
+    if (!checkout.grant_id && (setupFlags.no_wait_payment || setupFlags.no_wait)) {
+      output(agentRunResponse(run, {
+        status: "waiting_human_payment",
+        action: "scan_alipay_payment",
+        account_id: auth.account_id,
+        device_id: auth.device_id,
+        checkout_id: checkout.checkout_id,
+        order_id: checkout.order_id,
+        plan_id: checkout.plan_id || plan,
+        credits: checkout.credits || credits,
+        purchase: checkout.purchase || null,
+        expires_at: checkout.expires_at,
+        payment: checkout.payment,
+        human_action: checkout.human_action,
+        next_action: checkout.next_action || {
+          type: "show_qr_and_wait",
+          command: resumeCommand(run, setupFlags),
+          retry_after_ms: 2000
+        }
+      }));
+      return;
+    }
+
+    const payment = checkout.grant_id
+      ? { status: checkout.status, checkout_id: checkout.checkout_id, order_id: checkout.order_id, grant_id: checkout.grant_id }
+      : await paymentWaitResult(checkout.checkout_id, setupFlags);
+    run = mergeRun(readRun(run.run_id) || run, {
+      phase: "grant_ready",
+      checkout: {
+        ...(run.checkout || {}),
+        checkout_id: payment.checkout_id,
+        order_id: payment.order_id,
+        status: payment.status
+      },
+      payment: {
+        provider: method,
+        status: payment.status
+      },
+      grant: {
+        grant_id: payment.grant_id,
+        installed: false
+      },
+      human_action: null,
+      safe_summary: "Payment verified and grant is ready."
+    });
+    writeRun(run);
+
+    const grant = await grantsInstallResult(payment.grant_id, { ...setupFlags, target });
+    const runtimeInstall = shouldInstallRuntime
+      ? await installRuntimeResult(target, {
+        ...setupFlags,
+        grant: payment.grant_id,
+        no_test: flags.test ? false : true
+      })
+      : {
+        status: "skipped",
+        reason: "runtime_config_install_is_opt_in",
+        command: target === "generic"
+          ? `${cliCommand("install")} <target> --grant ${shellQuote(payment.grant_id)} --json`
+          : cliCommand("install", target, "--grant", payment.grant_id, "--json")
+      };
+    const tokenCommand = cliCommand("token", "issue", "--grant", payment.grant_id, "--stdout");
+    run = mergeRun(readRun(run.run_id) || run, {
+      phase: shouldInstallRuntime ? "done" : "grant_ready",
+      status: shouldInstallRuntime ? "installed" : "grant_ready",
+      grant: {
+        grant_id: payment.grant_id,
+        installed: true,
+        credential_store: grant.credential?.credential_store || null
+      },
+      result: {
+        base_url: grant.base_url,
+        openai_base_url: grant.openai_base_url,
+        anthropic_base_url: grant.anthropic_base_url,
+        gemini_base_url: grant.gemini_base_url
+      },
+      safe_summary: shouldInstallRuntime ? "Runtime configured." : "Grant credential stored."
+    });
+    writeRun(run);
+
+    output(agentRunResponse(run, {
+      status: shouldInstallRuntime ? "installed" : "grant_ready",
       account_id: auth.account_id,
       device_id: auth.device_id,
       checkout_id: checkout.checkout_id,
       order_id: checkout.order_id,
       plan_id: checkout.plan_id || plan,
-      expires_at: checkout.expires_at,
-      payment: checkout.payment,
-      next_action: checkout.next_action
-    });
+      credits: checkout.credits || credits,
+      purchase: checkout.purchase || null,
+      grant_id: payment.grant_id,
+      target,
+      base_url: grant.base_url,
+      openai_base_url: grant.openai_base_url,
+      anthropic_base_url: grant.anthropic_base_url,
+      gemini_base_url: grant.gemini_base_url,
+      credential: {
+        stored: true,
+        credential_store: grant.credential?.credential_store,
+        warning: grant.credential?.warning,
+        token_command: tokenCommand,
+        stdout_required_for_raw_token: true
+      },
+      auth,
+      checkout,
+      payment,
+      grant_install: grant,
+      runtime_install: runtimeInstall,
+      next_action: shouldInstallRuntime
+        ? null
+        : {
+          type: "configure_agent_optional",
+          token_command: tokenCommand,
+          runtime_install_command: runtimeInstall.command
+        }
+    }));
+  });
+}
+
+async function agentStatus(flags) {
+  const runId = flags.run_id || readState().current_run_id;
+  const run = readRun(runId);
+  if (!run) {
+    const config = readConfig();
+    const credentials = readCredentials();
+    let auth = { authenticated: Boolean(readSessionToken(credentials)), account_id: config.account_id || null, device_id: config.device_id || null };
+    if (auth.authenticated && flags.refresh) {
+      try {
+        auth = await api("/api/itp/auth/status", { method: "GET" }, flags);
+      } catch (error) {
+        auth = { authenticated: false, account_id: config.account_id || null, error: error.message };
+      }
+    }
+      output({
+        schema_version: "itp.agent.v1",
+        status: auth.authenticated ? "idle" : "unauthenticated",
+      phase: auth.authenticated ? "idle" : "unauthenticated",
+      authenticated: Boolean(auth.authenticated),
+        account_id: auth.account_id || null,
+        device_id: auth.device_id || null,
+        next: auth.authenticated
+          ? { type: "choose_credits_or_plan", command: cliCommand("plans", "--json"), safe_for_agent: true }
+          : { type: "start_auth", command: cliCommand("setup", "--plan", "credit-300", "--method", "alipay", "--json"), safe_for_agent: true },
+        secrets: { raw_key_included: false, session_token_included: false }
+      });
     return;
   }
+  const refreshed = flags.refresh ? await refreshRun(run, flags) : run;
+  writeRun(refreshed);
+  output(agentRunResponse(refreshed));
+}
 
-  const payment = checkout.grant_id
-    ? { status: checkout.status, checkout_id: checkout.checkout_id, order_id: checkout.order_id, grant_id: checkout.grant_id }
-    : await paymentWaitResult(checkout.checkout_id, setupFlags);
-  const grant = await grantsInstallResult(payment.grant_id, { ...setupFlags, target });
-  const runtimeInstall = shouldInstallRuntime
-    ? await installRuntimeResult(target, {
-      ...setupFlags,
-      grant: payment.grant_id,
-      no_test: flags.test ? false : true
-    })
-    : {
-      status: "skipped",
-      reason: "runtime_config_install_is_opt_in",
-      command: target === "generic"
-        ? `itp install <target> --grant ${payment.grant_id} --json`
-        : `itp install ${target} --grant ${payment.grant_id} --json`
-    };
-  const tokenCommand = `itp token issue --grant ${payment.grant_id} --stdout`;
-
-  output({
-    status: shouldInstallRuntime ? "installed" : "grant_ready",
-    account_id: auth.account_id,
-    device_id: auth.device_id,
-    checkout_id: checkout.checkout_id,
-    order_id: checkout.order_id,
-    plan_id: checkout.plan_id || plan,
-    grant_id: payment.grant_id,
-    target,
-    base_url: grant.base_url,
-    openai_base_url: grant.openai_base_url,
-    anthropic_base_url: grant.anthropic_base_url,
-    gemini_base_url: grant.gemini_base_url,
-    credential: {
-      stored: true,
-      credential_store: grant.credential?.credential_store,
-      warning: grant.credential?.warning,
-      token_command: tokenCommand,
-      stdout_required_for_raw_token: true
-    },
-    auth,
-    checkout,
-    payment,
-    grant_install: grant,
-    runtime_install: runtimeInstall,
-    next_action: shouldInstallRuntime
-      ? null
-      : {
-        type: "configure_agent",
-        token_command: tokenCommand,
-        runtime_install_command: runtimeInstall.command
-      }
+async function resume(flags) {
+  const runId = flags.run_id || readState().current_run_id;
+  const run = readRun(runId);
+  if (!run) throw new Error("no active run found");
+  if (["done", "installed"].includes(run.status) || run.phase === "done") {
+    output(agentRunResponse(run));
+    return;
+  }
+  await setup({
+    ...flags,
+    run_id: run.run_id,
+    resume: true,
+    plan: run.plan_id || flags.plan,
+    credits: run.plan_id ? flags.credits : run.credits || flags.credits,
+    method: run.payment_method || flags.method,
+    target: run.target || flags.target,
+    install_runtime: run.install_runtime || flags.install_runtime
   });
+}
+
+async function runs(command, flags) {
+  if (command === "current") {
+    const run = readRun(flags.run_id || readState().current_run_id);
+    output(run ? agentRunResponse(run) : { schema_version: "itp.agent.v1", status: "none", runs: [] });
+    return;
+  }
+  if (command === "list") {
+    output({ runs: listRuns().map(agentRunResponse) });
+    return;
+  }
+  if (command === "show") {
+    const run = readRun(flags.run_id || flags.id);
+    if (!run) throw new Error("run not found");
+    output(agentRunResponse(run));
+    return;
+  }
+  if (command === "forget") {
+    const runId = flags.run_id || flags.id;
+    if (!runId || runId === "forget") throw new Error("run_id is required");
+    const file = runPath(runId);
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+    const state = readState();
+    if (state.current_run_id === runId) {
+      delete state.current_run_id;
+      writeState(state);
+    }
+    output({ status: "forgotten", run_id: runId });
+    return;
+  }
+  throw new Error(`unknown runs command: ${command || ""}`);
 }
 
 async function startDeviceAuth(flags) {
@@ -319,6 +572,13 @@ async function completeDeviceAuth(flags) {
   const start = await startDeviceAuth(flags);
   if (flags.no_wait) {
     writeState({ ...readState(), last_auth_id: start.auth_id });
+    updateCurrentRun({
+      phase: "waiting_human_auth",
+      auth: { auth_id: start.auth_id, status: "pending", expires_at: start.expires_at },
+      human_action: start.human_action || null,
+      safe_summary: "Waiting for Alipay authentication scan."
+    }, flags);
+    await renderHumanAction(start.human_action, flags);
     return start;
   }
   await maybeMockApproveDeviceAuth(start.auth_id, flags);
@@ -357,9 +617,40 @@ async function ensureAuthenticated(flags) {
       writeCredentials(credentials);
     }
   }
+  const resumableRun = readRun(flags.run_id || readState().current_run_id);
+  if ((flags.resume || flags.auth_id) && resumableRun?.auth?.auth_id && !resumableRun.account?.authenticated && !resumableRun.checkout?.checkout_id && !flags.no_wait && !flags.no_wait_auth) {
+    await renderHumanAction(resumableRun.human_action, flags);
+    await maybeMockApproveDeviceAuth(resumableRun.auth.auth_id, flags);
+    const response = await waitDeviceAuth(resumableRun.auth.auth_id, flags);
+    if (!response.auth) {
+      return {
+        authenticated: false,
+        status: response.status || "waiting_human_auth",
+        auth_id: resumableRun.auth.auth_id,
+        expires_at: resumableRun.auth.expires_at,
+        human_action: resumableRun.human_action
+      };
+    }
+    writeSessionCredentials(response.auth);
+    writeConfig({
+      api_base: apiBase(flags),
+      account_id: response.auth.account_id,
+      device_id: response.auth.device_id,
+      web_console_url: response.auth.web_console_url
+    });
+    writeState({ ...readState(), last_auth_id: resumableRun.auth.auth_id });
+    return { ...sanitizeAuthResponse(response.auth), auth_id: resumableRun.auth.auth_id, authenticated: true, session_reused: false };
+  }
   if (flags.no_wait || flags.no_wait_auth) {
     const start = await startDeviceAuth(flags);
     writeState({ ...readState(), last_auth_id: start.auth_id });
+    updateCurrentRun({
+      phase: "waiting_human_auth",
+      auth: { auth_id: start.auth_id, status: "pending", expires_at: start.expires_at },
+      human_action: start.human_action || null,
+      safe_summary: "Waiting for Alipay authentication scan."
+    }, flags);
+    await renderHumanAction(start.human_action, flags);
     return {
       authenticated: false,
       status: "waiting_human_auth",
@@ -370,7 +661,8 @@ async function ensureAuthenticated(flags) {
       verification_uri_complete: start.verification_uri_complete,
       alipay_authorization_url: start.alipay_authorization_url,
       expires_at: start.expires_at,
-      interval: start.interval
+      interval: start.interval,
+      human_action: start.human_action
     };
   }
   const auth = await completeDeviceAuth(flags);
@@ -380,6 +672,9 @@ async function ensureAuthenticated(flags) {
 async function maybeMockApproveDeviceAuth(authId, flags) {
   if (!(flags.mock_approve || process.env.ITPAY_MOCK_APPROVE === "true" || process.env.ITPAY_MOCK_APPROVE === "1")) {
     return;
+  }
+  if (!fakeTestingAllowed(flags)) {
+    throw new Error("mock approval is developer-only and disabled for agent runs; use real Alipay sandbox authentication");
   }
   const alipayUserId = flags.alipay_user_id || process.env.ITPAY_MOCK_ALIPAY_USER_ID || `2088${crypto.randomInt(100000000000, 999999999999)}`;
   await api(`/api/itp/auth/device/${encodeURIComponent(authId)}/mock-approve`, {
@@ -392,6 +687,7 @@ async function authDevice(command, flags) {
   if (command === "start") {
     const response = await startDeviceAuth(flags);
     writeState({ ...readState(), last_auth_id: response.auth_id });
+    await renderHumanAction(response.human_action, flags);
     output(response);
     return;
   }
@@ -418,17 +714,38 @@ async function waitDeviceAuth(authId, flags, start = null) {
   const started = Date.now();
   const timeoutMs = Number(flags.timeout || 600) * 1000;
   let intervalMs = 2000;
+  let lastHeartbeatAt = 0;
+  let lastStatus = "authorization_pending";
+  const action = start?.human_action || null;
   if (start) {
-    process.stderr.write(`Open Alipay auth URL: ${start.verification_uri_complete || start.alipay_authorization_url}\n`);
+    updateCurrentRun({
+      phase: "waiting_human_auth",
+      auth: { auth_id: start.auth_id, status: "pending", expires_at: start.expires_at },
+      human_action: start.human_action || null,
+      safe_summary: "Waiting for Alipay authentication scan."
+    }, flags);
+    await renderHumanAction(start.human_action, flags);
+    if (!start.human_action) process.stderr.write(`Open Alipay auth URL: ${start.verification_uri_complete || start.alipay_authorization_url}\n`);
     if (start.user_code) process.stderr.write(`Alipay auth code: ${start.user_code}\n`);
   }
   while (Date.now() - started < timeoutMs) {
     const response = await api(`/api/itp/auth/device/${encodeURIComponent(authId)}/poll`, { method: "POST" }, flags);
+    lastStatus = response.status || lastStatus;
     if (response.auth?.session_token) {
       return response;
     }
     if (response.status === "authorization_pending") {
       intervalMs = Number(response.interval || 2) * 1000;
+      lastHeartbeatAt = writeWaitHeartbeat({
+        kind: "Alipay authentication",
+        idName: "auth_id",
+        idValue: authId,
+        status: response.status,
+        action,
+        lastHeartbeatAt,
+        flags,
+        command: cliCommand("auth", "device", "poll", authId, "--timeout", String(Math.ceil((timeoutMs - (Date.now() - started)) / 1000)), "--json")
+      });
       await sleep(intervalMs);
       continue;
     }
@@ -440,7 +757,7 @@ async function waitDeviceAuth(authId, flags, start = null) {
     }
     await sleep(intervalMs);
   }
-  throw new Error(`device auth timed out; run \`itp auth device poll ${authId} --timeout 600\``);
+  throw new Error(`device auth timed out at status ${lastStatus}; run \`itp auth device poll ${authId} --timeout 600\``);
 }
 
 async function authLogin(flags) {
@@ -528,23 +845,65 @@ async function plansShow(plan, flags) {
 }
 
 async function checkoutCreate(flags) {
-  output(await createCheckoutResult(flags));
+  const response = await createCheckoutResult(flags);
+  await renderHumanAction(response.human_action, flags);
+  output(response);
 }
 
 async function createCheckoutResult(flags) {
-  const plan = flags.plan || "coding-100";
+  const purchase = normalizePurchaseFlags(flags, true);
   const method = flags.method || "alipay";
-  const idempotencyKey = flags.idempotency_key || cryptoRandom();
+  validateLivePaymentFlags(method, flags);
+  const currentRun = readRun(flags.run_id || readState().current_run_id);
+  const idempotencyKey = flags.idempotency_key || currentRun?.idempotency_key || cryptoRandom();
+  const body = {
+    payment_method: method,
+    idempotency_key: idempotencyKey
+  };
+  if (purchase.plan) body.plan_id = purchase.plan;
+  if (purchase.credits) body.credits = purchase.credits;
   const response = await api("/api/itp/checkout", {
     method: "POST",
-    body: {
-      plan_id: plan,
-      payment_method: method,
-      idempotency_key: idempotencyKey
-    }
+    body
   }, flags);
   writeState({ ...readState(), last_checkout_id: response.checkout_id, last_grant_id: response.grant_id || null });
+  updateCurrentRun({
+    phase: response.grant_id ? "grant_ready" : "waiting_human_payment",
+    plan_id: response.plan_id || purchase.plan || null,
+    credits: response.credits || purchase.credits || null,
+    purchase_kind: response.purchase?.kind || purchase.kind,
+    checkout: {
+      checkout_id: response.checkout_id,
+      order_id: response.order_id,
+      status: response.status,
+      expires_at: response.expires_at,
+      purchase: response.purchase || null
+    },
+    payment: {
+      provider: method,
+      status: response.status
+    },
+    grant: {
+      ...(currentRun?.grant || {}),
+      grant_id: response.grant_id || currentRun?.grant?.grant_id || null
+    },
+    human_action: response.human_action || null,
+    safe_summary: response.grant_id ? "Payment verified and grant is ready." : "Waiting for Alipay payment scan."
+  }, flags);
   return response;
+}
+
+function validateLivePaymentFlags(method, flags = {}) {
+  if (String(method).toLowerCase() === "fake" && !fakeTestingAllowed(flags)) {
+    throw new Error("fake payment is developer-only and disabled for agent runs; use --method alipay for local, sandbox, and live testing");
+  }
+  if ((flags.mock_approve || process.env.ITPAY_MOCK_APPROVE === "true" || process.env.ITPAY_MOCK_APPROVE === "1") && !fakeTestingAllowed(flags)) {
+    throw new Error("mock approval is developer-only and disabled for agent runs; use real Alipay sandbox authentication");
+  }
+}
+
+function fakeTestingAllowed(flags = {}) {
+  return flags.allow_fake || process.env.ITP_ALLOW_FAKE_PAYMENT === "true" || process.env.ITP_ALLOW_FAKE_PAYMENT === "1";
 }
 
 async function paymentWait(checkoutId, flags) {
@@ -556,6 +915,7 @@ async function paymentWaitResult(checkoutId, flags) {
   const started = Date.now();
   const timeoutMs = Number(flags.timeout || 120) * 1000;
   let lastRecoverAt = 0;
+  let lastHeartbeatAt = 0;
   let lastResponse = null;
   while (Date.now() - started < timeoutMs) {
     let response = await api(`/api/itp/checkout/${encodeURIComponent(checkoutId)}`, { method: "GET" }, flags);
@@ -565,6 +925,13 @@ async function paymentWaitResult(checkoutId, flags) {
     }
     if (isSuccessfulCheckout(response)) {
       writeState({ ...readState(), last_checkout_id: checkoutId, last_grant_id: response.grant_id });
+      updateCurrentRun({
+        phase: "grant_ready",
+        checkout: { checkout_id: checkoutId, order_id: response.order_id, status: response.status, expires_at: response.expires_at },
+        grant: { grant_id: response.grant_id, installed: false },
+        human_action: null,
+        safe_summary: "Payment verified and grant is ready."
+      }, flags);
       return { status: "grant_issued", checkout_id: checkoutId, order_id: response.order_id, grant_id: response.grant_id };
     }
     if (shouldRecoverCheckout(response.status) && Date.now() - lastRecoverAt > 5000) {
@@ -576,9 +943,26 @@ async function paymentWaitResult(checkoutId, flags) {
       }
       if (isSuccessfulCheckout(response)) {
         writeState({ ...readState(), last_checkout_id: checkoutId, last_grant_id: response.grant_id });
+        updateCurrentRun({
+          phase: "grant_ready",
+          checkout: { checkout_id: checkoutId, order_id: response.order_id, status: response.status, expires_at: response.expires_at },
+          grant: { grant_id: response.grant_id, installed: false },
+          human_action: null,
+          safe_summary: "Payment verified and grant is ready."
+        }, flags);
         return { status: "grant_issued", checkout_id: checkoutId, order_id: response.order_id, grant_id: response.grant_id, recovered: true };
       }
     }
+    lastHeartbeatAt = writeWaitHeartbeat({
+      kind: "Alipay payment",
+      idName: "checkout_id",
+      idValue: checkoutId,
+      status: response.status || "waiting",
+      action: response.human_action || null,
+      lastHeartbeatAt,
+      flags,
+      command: cliCommand("payment", "wait", checkoutId, "--timeout", String(Math.ceil((timeoutMs - (Date.now() - started)) / 1000)), "--json")
+    });
     await sleep(2000);
   }
   try {
@@ -589,6 +973,13 @@ async function paymentWaitResult(checkoutId, flags) {
     }
     if (isSuccessfulCheckout(response)) {
       writeState({ ...readState(), last_checkout_id: checkoutId, last_grant_id: response.grant_id });
+      updateCurrentRun({
+        phase: "grant_ready",
+        checkout: { checkout_id: checkoutId, order_id: response.order_id, status: response.status, expires_at: response.expires_at },
+        grant: { grant_id: response.grant_id, installed: false },
+        human_action: null,
+        safe_summary: "Payment verified and grant is ready."
+      }, flags);
       return { status: "grant_issued", checkout_id: checkoutId, order_id: response.order_id, grant_id: response.grant_id, recovered: true };
     }
   } catch (error) {
@@ -621,7 +1012,9 @@ async function checkoutOpen(flags) {
 
 async function checkoutQR(checkoutId, flags) {
   if (!checkoutId) throw new Error("checkout_id is required");
-  output(await api(`/api/itp/checkout/${encodeURIComponent(checkoutId)}/qr`, { method: "GET" }, flags));
+  const response = await api(`/api/itp/checkout/${encodeURIComponent(checkoutId)}/qr`, { method: "GET" }, flags);
+  await renderHumanAction(response.human_action, flags);
+  output(response);
 }
 
 async function checkoutList(flags) {
@@ -700,6 +1093,21 @@ async function grantsInstallResult(grantId, flags) {
   }, null, 2), { mode: 0o600 });
   fs.chmodSync(metadataPath, 0o600);
   writeState({ ...readState(), last_grant_id: grantId });
+  updateCurrentRun({
+    phase: "grant_ready",
+    grant: {
+      grant_id: grantId,
+      installed: true,
+      credential_store: storedCredential.credential_store || null
+    },
+    result: {
+      base_url: response.base_url,
+      openai_base_url: response.openai_base_url,
+      anthropic_base_url: response.anthropic_base_url,
+      gemini_base_url: response.gemini_base_url
+    },
+    safe_summary: "Grant credential stored."
+  }, flags);
   return {
     ...response,
     credential: {
@@ -1050,6 +1458,425 @@ async function sync(flags) {
   output({ account, balance: balanceResult, grants });
 }
 
+async function refreshRun(run, flags = {}) {
+  let next = { ...run };
+  const credentials = readCredentials();
+  const hasSession = Boolean(readSessionToken(credentials));
+
+  if (next.auth?.auth_id && !hasSession) {
+    try {
+      const auth = await api(`/api/itp/auth/device/${encodeURIComponent(next.auth.auth_id)}/poll`, { method: "POST" }, flags);
+      if (auth.auth?.session_token) {
+        writeSessionCredentials(auth.auth);
+        writeConfig({
+          api_base: apiBase(flags),
+          account_id: auth.auth.account_id,
+          device_id: auth.auth.device_id,
+          web_console_url: auth.auth.web_console_url
+        });
+        next = mergeRun(next, {
+          phase: "authenticated",
+          status: "running",
+          account: {
+            authenticated: true,
+            account_id: auth.auth.account_id,
+            device_id: auth.auth.device_id,
+            newapi_user_id: auth.auth.newapi_user_id || null
+          },
+          auth: { status: "consumed" },
+          human_action: null,
+          safe_summary: "Agent device authenticated."
+        });
+      } else if (auth.status === "authorization_pending") {
+        next = mergeRun(next, {
+          phase: "waiting_human_auth",
+          status: "waiting_human_auth",
+          auth: { status: "pending", expires_at: auth.expires_at },
+          human_action: auth.human_action || auth.next_action?.human_action || next.human_action || null,
+          safe_summary: "Waiting for Alipay authentication scan."
+        });
+      } else if (auth.status) {
+        next = mergeRun(next, {
+          phase: auth.status === "expired" ? "expired" : "failed",
+          status: auth.status === "expired" ? "expired" : "failed",
+          auth: { status: auth.status },
+          safe_summary: auth.error || `Auth status: ${auth.status}`
+        });
+      }
+    } catch (error) {
+      next = mergeRun(next, { last_error: safeErrorMessage(error), safe_summary: "Could not refresh auth status." });
+    }
+  }
+
+  if (readSessionToken(readCredentials())) {
+    try {
+      const authStatusResult = await api("/api/itp/auth/status", { method: "GET" }, flags);
+      next = mergeRun(next, {
+        account: {
+          authenticated: authStatusResult.authenticated !== false,
+          account_id: authStatusResult.account_id || next.account?.account_id || null,
+          device_id: authStatusResult.device_id || next.account?.device_id || null,
+          newapi_user_id: authStatusResult.newapi_user_id || null
+        }
+      });
+    } catch (error) {
+      next = mergeRun(next, { last_error: safeErrorMessage(error) });
+    }
+  }
+
+  if (next.checkout?.checkout_id && readSessionToken(readCredentials())) {
+    try {
+      const checkout = await api(`/api/itp/checkout/${encodeURIComponent(next.checkout.checkout_id)}`, { method: "GET" }, flags);
+      next = mergeRun(next, {
+        phase: checkout.grant_id ? "grant_ready" : checkout.status === "waiting_user_payment" ? "waiting_human_payment" : next.phase,
+        status: checkout.grant_id ? "grant_ready" : checkout.status === "waiting_user_payment" ? "waiting_human_payment" : next.status,
+        checkout: {
+          checkout_id: checkout.checkout_id,
+          order_id: checkout.order_id,
+          status: checkout.status,
+          expires_at: checkout.expires_at
+        },
+        payment: { provider: next.payment_method, status: checkout.status },
+        grant: { ...(next.grant || {}), grant_id: checkout.grant_id || next.grant?.grant_id || null },
+        human_action: checkout.human_action || null,
+        safe_summary: checkout.grant_id ? "Payment verified and grant is ready." : checkout.status === "waiting_user_payment" ? "Waiting for Alipay payment scan." : `Checkout status: ${checkout.status}`
+      });
+    } catch (error) {
+      next = mergeRun(next, { last_error: safeErrorMessage(error), safe_summary: "Could not refresh checkout status." });
+    }
+  }
+
+  const grantId = next.grant?.grant_id || readState().last_grant_id;
+  if (grantId) {
+    const credential = readGrantCredential(grantId);
+    if (credential?.key || credential?.credential_ref) {
+      next = mergeRun(next, {
+        phase: next.install_runtime ? next.phase : "grant_ready",
+        grant: { grant_id: grantId, installed: true, credential_store: credential.credential_store || "file" },
+        safe_summary: "Grant credential stored."
+      });
+    }
+  }
+  return next;
+}
+
+function agentRunResponse(run, extra = {}) {
+  const status = extra.status || (run.status && run.status !== "running" ? run.status : phaseToStatus(run.phase));
+  return {
+    schema_version: "itp.agent.v1",
+    status,
+    run_id: run.run_id,
+    phase: run.phase || status,
+    auth_id: extra.auth_id || run.auth?.auth_id || null,
+    account_id: extra.account_id || run.account?.account_id || null,
+    device_id: extra.device_id || run.account?.device_id || null,
+    checkout_id: extra.checkout_id || run.checkout?.checkout_id || null,
+    order_id: extra.order_id || run.checkout?.order_id || null,
+    grant_id: extra.grant_id || run.grant?.grant_id || null,
+    plan_id: extra.plan_id || run.plan_id || null,
+    credits: extra.credits || run.credits || run.checkout?.purchase?.credits_granted || null,
+    purchase: extra.purchase || run.checkout?.purchase || undefined,
+    target: extra.target || run.target || "generic",
+    base_url: extra.base_url || run.result?.base_url || undefined,
+    openai_base_url: extra.openai_base_url || run.result?.openai_base_url || undefined,
+    anthropic_base_url: extra.anthropic_base_url || run.result?.anthropic_base_url || undefined,
+    gemini_base_url: extra.gemini_base_url || run.result?.gemini_base_url || undefined,
+    credential: extra.credential || (run.grant?.installed ? {
+      stored: true,
+      credential_store: run.grant?.credential_store,
+      token_command: run.grant?.grant_id ? cliCommand("token", "issue", "--grant", run.grant.grant_id, "--stdout") : undefined,
+      stdout_required_for_raw_token: true
+    } : undefined),
+    human_action: extra.human_action || run.human_action || undefined,
+    next: extra.next || nextActionForRun(run),
+    next_action: extra.next_action || undefined,
+    safe_user_message: extra.safe_user_message || safeUserMessageForRun(run),
+    safe_summary: run.safe_summary || undefined,
+    warnings: extra.warnings || [],
+    secrets: {
+      raw_key_included: false,
+      session_token_included: false
+    },
+    ...extra
+  };
+}
+
+function phaseToStatus(phase) {
+  if (phase === "waiting_human_auth") return "waiting_human_auth";
+  if (phase === "waiting_human_payment") return "waiting_human_payment";
+  if (phase === "grant_ready") return "grant_ready";
+  if (phase === "done") return "done";
+  if (phase === "expired") return "expired";
+  if (phase === "failed") return "failed";
+  return phase || "running";
+}
+
+function nextActionForRun(run) {
+  if (run.phase === "waiting_human_auth") {
+    return { type: "show_qr_and_wait", command: resumeCommand(run, runResumeFlags(run)), retry_after_ms: 2000, safe_for_agent: true };
+  }
+  if (run.phase === "waiting_human_payment") {
+    return { type: "show_qr_and_wait", command: resumeCommand(run, runResumeFlags(run, { display: "none" })), retry_after_ms: 2000, safe_for_agent: true };
+  }
+  if (["paid_verified", "granting", "grant_failed"].includes(run.checkout?.status)) {
+    return { type: "recover_checkout", command: cliCommand("checkout", "recover", run.checkout.checkout_id, "--json"), safe_for_agent: true };
+  }
+  if (run.grant?.grant_id && !run.grant?.installed) {
+    return { type: "install_grant", command: cliCommand("grants", "install", run.grant.grant_id, "--target", run.target || "generic", "--json"), safe_for_agent: true };
+  }
+  if (run.grant?.installed) {
+    return { type: "done", safe_for_agent: true };
+  }
+  return { type: "resume", command: resumeCommand(run, runResumeFlags(run)), safe_for_agent: true };
+}
+
+function runResumeFlags(run, overrides = {}) {
+  return {
+    host: run.agent_host || undefined,
+    display: run.agent_display || undefined,
+    qr_format: run.agent_qr_format || undefined,
+    api_base: run.api_base || undefined,
+    ...overrides
+  };
+}
+
+function resumeCommand(run, flags = {}, options = {}) {
+  const args = ["resume", "--run-id", run.run_id, "--json"];
+  appendPassthroughFlag(args, flags, "host");
+  appendPassthroughFlag(args, flags, "display");
+  appendPassthroughFlag(args, flags, "qr_format", "qr-format");
+  appendPassthroughFlag(args, flags, "api_base", "api-base");
+  appendPassthroughFlag(args, flags, "api_timeout", "api-timeout");
+  if (options.no_wait_payment) args.push("--no-wait-payment");
+  return cliCommand(...args);
+}
+
+function appendPassthroughFlag(args, flags, key, flagName = key) {
+  const value = flags[key];
+  if (value === undefined || value === null || value === false) return;
+  args.push(`--${flagName}`);
+  if (value !== true) args.push(String(value));
+}
+
+function cliCommand(...args) {
+  const override = process.env.ITP_COMMAND;
+  const base = override
+    ? override
+    : `${shellQuote(process.execPath)} ${shellQuote(CLI_FILE)}`;
+  return [base, ...args.map((arg) => shellQuote(String(arg)))].join(" ");
+}
+
+function shellQuote(value) {
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function safeUserMessageForRun(run) {
+  if (run.phase === "waiting_human_auth") return "Please scan the Alipay authentication QR. I will continue automatically after approval.";
+  if (run.phase === "waiting_human_payment") return "Please scan the Alipay payment QR. I will continue automatically after payment is verified.";
+  if (run.grant?.installed) return "Payment verified. The API credential is stored locally.";
+  return run.safe_summary || "ITPay setup is in progress.";
+}
+
+function safeErrorMessage(error) {
+  return String(error?.message || error || "unknown error")
+    .replace(/itp_sess_[A-Za-z0-9_-]+/g, "itp_sess_****")
+    .replace(/sk-[A-Za-z0-9_-]+/g, "sk-****");
+}
+
+function humanActionSummaryLines(action) {
+  if (!action?.url) return [];
+  const lines = [
+    "ITP HUMAN ACTION REQUIRED",
+    `Title: ${action.title || "Scan with Alipay"}`,
+    `URL: ${action.url}`
+  ];
+  if (action.fallback_text && !action.fallback_text.includes(action.url)) {
+    lines.push(`Fallback: ${action.fallback_text}`);
+  }
+  if (action.expires_at) {
+    lines.push(`Expires at: ${new Date(Number(action.expires_at) * 1000).toISOString()}`);
+  }
+  return lines;
+}
+
+function writeHumanActionSummary(action, suffix = "") {
+  const lines = humanActionSummaryLines(action);
+  if (!lines.length) return;
+  process.stderr.write(`\n${lines.join("\n")}${suffix ? `\n${suffix}` : ""}\n\n`);
+}
+
+function waitHeartbeatMs(flags = {}) {
+  if (flags.quiet || process.env.ITP_WAIT_HEARTBEAT_SECONDS === "0") return 0;
+  return Math.max(5000, Number(flags.heartbeat || process.env.ITP_WAIT_HEARTBEAT_SECONDS || 20) * 1000);
+}
+
+function writeWaitHeartbeat({ kind, idName, idValue, status, action, lastHeartbeatAt, flags, command }) {
+  const heartbeatMs = waitHeartbeatMs(flags);
+  if (!heartbeatMs) return lastHeartbeatAt;
+  const now = Date.now();
+  if (now - lastHeartbeatAt < heartbeatMs) return lastHeartbeatAt;
+  const lines = [
+    `ITP waiting for ${kind}: ${idName}=${idValue} status=${status}`,
+    action?.url ? `URL: ${action.url}` : null,
+    command ? `Resume command: ${command}` : null
+  ].filter(Boolean);
+  process.stderr.write(`\n${lines.join("\n")}\n\n`);
+  return now;
+}
+
+async function renderHumanAction(action, flags = {}) {
+  if (!action?.url) return null;
+  const mode = String(flags.display || process.env.ITP_DISPLAY || "").toLowerCase() || "auto";
+  if (mode === "none" || mode === "json") return { rendered: false, mode };
+  const host = String(process.env.ITP_HOST || flags.host || "").toLowerCase();
+  if (["discord", "telegram", "whatsapp"].includes(host)) {
+    return { rendered: false, mode: "chat-json", host };
+  }
+  if (shouldUseAgentTextQR(flags)) {
+    await attachAgentTextQR(action, flags);
+    persistHumanAction(action, flags);
+    return { rendered: false, mode: "agent-text-qr", host, outputs: ["agent_text_qr"] };
+  }
+
+  const renderResult = { rendered: false, mode, outputs: [] };
+  writeHumanActionSummary(action);
+  if ((mode === "auto" || mode === "browser") && shouldOpenBrowser(flags)) {
+    if (openBrowser(action.url)) {
+      renderResult.rendered = true;
+      renderResult.outputs.push("browser");
+    }
+    if (mode === "browser") return renderResult;
+  }
+
+  if (mode === "file" || flags.qr_file || process.env.ITP_QR_FILE) {
+    const file = flags.qr_file || process.env.ITP_QR_FILE || path.join(os.tmpdir(), `itp-${action.id || "qr"}.png`);
+    await QRCode.toFile(file, action.url, { errorCorrectionLevel: "M", width: 512, margin: 2 });
+    process.stderr.write(`Alipay QR image: ${file}\n`);
+    renderResult.rendered = true;
+    renderResult.outputs.push(file);
+    if (mode === "file") return renderResult;
+  }
+
+  if ((mode === "auto" || mode === "terminal") && shouldRenderTerminalQR(host)) {
+    const qr = await QRCode.toString(action.url, {
+      type: terminalQRType(flags, host),
+      small: true,
+      errorCorrectionLevel: "M"
+    });
+    process.stderr.write(`\n${action.title || "Scan with Alipay"}\n`);
+    if (action.description) process.stderr.write(`${action.description}\n`);
+    process.stderr.write(`${qr}\n`);
+    process.stderr.write(`Alipay action URL: ${action.url}\n`);
+    if (action.expires_at) process.stderr.write(`Expires at: ${new Date(Number(action.expires_at) * 1000).toISOString()}\n`);
+    renderResult.rendered = true;
+    renderResult.outputs.push("terminal");
+    return renderResult;
+  }
+
+  process.stderr.write(`${action.fallback_text || `Open Alipay URL: ${action.url}`}\n`);
+  renderResult.outputs.push("url");
+  return renderResult;
+}
+
+function shouldUseAgentTextQR(flags = {}) {
+  const mode = String(flags.display || process.env.ITP_DISPLAY || "").toLowerCase() || "auto";
+  const host = String(process.env.ITP_HOST || flags.host || "").toLowerCase();
+  return mode === "chat" || mode === "agent" || (["gemini", "gemini-cli"].includes(host) && mode === "auto");
+}
+
+function shouldReturnAfterAgentTextQR(flags = {}) {
+  if (flags.wait || flags.wait_human) return false;
+  return shouldUseAgentTextQR(flags);
+}
+
+async function attachAgentTextQR(action, flags = {}) {
+  if (!action?.url || action.agent_text_qr) return action;
+  const qr = await QRCode.toString(action.url, {
+    type: "utf8",
+    small: true,
+    errorCorrectionLevel: "M"
+  });
+  const lines = qr.replace(/\s+$/g, "").split(/\r?\n/);
+  const text = lines.join("\n");
+  const sha256 = crypto.createHash("sha256").update(text).digest("hex");
+  action.agent_text_qr = {
+    type: "terminal_text",
+    format: "unicode",
+    lines,
+    text,
+    fenced_text: `\`\`\`text\n${text}\n\`\`\``,
+    line_count: lines.length,
+    sha256,
+    url: action.url,
+    allowed_characters: "Only U+2588 FULL BLOCK, U+2580 UPPER HALF BLOCK, U+2584 LOWER HALF BLOCK, spaces, and newlines are valid inside the QR body.",
+    instructions: "Paste fenced_text verbatim into the normal assistant message, not the shell panel. Do not retype, translate, add line numbers, or add words inside the QR body. If any letters, digits, or Chinese characters appear inside the QR body, discard it and use the QR image URL/fallback link instead."
+  };
+  if (!Array.isArray(action.display)) {
+    action.display = [];
+  }
+  if (!action.display.some((item) => item?.type === "terminal_text")) {
+    action.display.push({
+      type: "terminal_text",
+      format: "unicode",
+      lines
+    });
+  }
+  return action;
+}
+
+function persistHumanAction(action, flags = {}) {
+  const runId = flags.run_id || readState().current_run_id;
+  if (!runId || !action?.id) return;
+  const run = readRun(runId);
+  if (!run?.human_action?.id || run.human_action.id !== action.id) return;
+  writeRun(mergeRun(run, { human_action: action }));
+}
+
+function shouldRenderTerminalQR(host) {
+  if (process.stderr.isTTY) return true;
+  return ["gemini", "gemini-cli"].includes(host);
+}
+
+function terminalQRType(flags = {}, host = "") {
+  const requested = String(flags.qr_format || process.env.ITP_QR_FORMAT || "").toLowerCase();
+  if (requested === "unicode" || requested === "utf8") return "utf8";
+  if (requested === "ansi" || requested === "terminal") return "terminal";
+  if (["gemini", "gemini-cli"].includes(host)) return "utf8";
+  return "terminal";
+}
+
+function shouldOpenBrowser(flags = {}) {
+  if (flags.no_open_browser || process.env.ITP_OPEN_BROWSER === "false" || process.env.ITP_OPEN_BROWSER === "0") return false;
+  if (flags.open_browser || process.env.ITP_OPEN_BROWSER === "true" || process.env.ITP_OPEN_BROWSER === "1") return true;
+  if (process.env.SSH_CONNECTION || process.env.CI) return false;
+  return Boolean(process.stderr.isTTY && (process.platform === "darwin" || process.platform === "win32" || process.env.DISPLAY || process.env.WAYLAND_DISPLAY || process.env.WSL_DISTRO_NAME));
+}
+
+function openBrowser(targetURL) {
+  try {
+    if (process.platform === "darwin") {
+      execFileSync("open", [targetURL], { stdio: "ignore", timeout: 2000 });
+      return true;
+    }
+    if (process.platform === "win32") {
+      execFileSync("cmd", ["/c", "start", "", targetURL], { stdio: "ignore", timeout: 2000 });
+      return true;
+    }
+    if (process.env.WSL_DISTRO_NAME && commandExists("cmd.exe")) {
+      execFileSync("cmd.exe", ["/c", "start", "", targetURL], { stdio: "ignore", timeout: 2000 });
+      return true;
+    }
+    if (commandExists("xdg-open")) {
+      execFileSync("xdg-open", [targetURL], { stdio: "ignore", timeout: 2000 });
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 async function admin(command, rest, flags) {
   if (command === "orders") {
     const params = new URLSearchParams();
@@ -1107,16 +1934,36 @@ async function api(pathname, options, flags = {}) {
   if (flags.new_api_user || flags.new_api_user_id || flags.user_id) {
     headers["New-Api-User"] = String(flags.new_api_user || flags.new_api_user_id || flags.user_id);
   }
-  const response = await fetch(`${base}${pathname}`, {
-    method: options.method,
-    headers,
-    body: options.body ? JSON.stringify(options.body) : undefined
-  });
+  const timeoutMs = apiTimeoutMs(flags);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetch(`${base}${pathname}`, {
+      method: options.method,
+      headers,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`request timed out after ${Math.ceil(timeoutMs / 1000)}s: ${pathname}`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.success === false) {
     throw new Error(payload.message || `request failed: ${response.status}`);
   }
   return payload.data ?? payload;
+}
+
+function apiTimeoutMs(flags = {}) {
+  const seconds = Number(flags.api_timeout || process.env.ITP_API_TIMEOUT_SECONDS || 45);
+  if (!Number.isFinite(seconds) || seconds <= 0) return 45000;
+  return Math.max(5000, seconds * 1000);
 }
 
 function parseFlags(args) {
@@ -1134,6 +1981,42 @@ function parseFlags(args) {
     }
   }
   return flags;
+}
+
+function normalizePurchaseFlags(flags, required = false) {
+  const plan = typeof flags.plan === "string" ? flags.plan.trim() : "";
+  const rawCredits = flags.credits ?? flags.credit ?? null;
+  const hasCredits = rawCredits !== null && rawCredits !== undefined && rawCredits !== false;
+  if (plan && hasCredits) {
+    throw new Error("use either --plan or --credits, not both");
+  }
+  if (hasCredits) {
+    const credits = Number(rawCredits);
+    if (!Number.isInteger(credits) || credits < 20) {
+      throw new Error("--credits must be an integer greater than or equal to 20");
+    }
+    return {
+      kind: "custom",
+      plan: null,
+      credits,
+      key: `credits-${credits}`
+    };
+  }
+  if (plan) {
+    if (plan === "coding-100") {
+      throw new Error("coding-100 is disabled; use credit-100, credit-300, credit-500, or --credits <amount>");
+    }
+    return {
+      kind: "plan",
+      plan,
+      credits: null,
+      key: `plan-${plan}`
+    };
+  }
+  if (required) {
+    throw new Error("choose a purchase: --credits <integer >=20> or --plan credit-100|credit-300|credit-500");
+  }
+  return { kind: null, plan: null, credits: null, key: "none" };
 }
 
 function apiBase(flags = {}, config = readConfig()) {
@@ -1154,6 +2037,155 @@ function readState() {
 
 function writeState(value) {
   writeJSON0600(STATE_PATH, value);
+}
+
+function runPath(runId) {
+  return path.join(RUNS_DIR, `${runId}.json`);
+}
+
+function readRun(runId) {
+  if (!runId) return null;
+  return readJSON(runPath(runId), null);
+}
+
+function listRuns() {
+  if (!fs.existsSync(RUNS_DIR)) return [];
+  return fs.readdirSync(RUNS_DIR)
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => readJSON(path.join(RUNS_DIR, name), null))
+    .filter(Boolean)
+    .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+}
+
+function writeRun(run) {
+  if (!run?.run_id) throw new Error("run_id is required");
+  ensureConfigDir();
+  fs.mkdirSync(RUNS_DIR, { recursive: true });
+  try {
+    fs.chmodSync(RUNS_DIR, 0o700);
+  } catch {
+    // Best effort on platforms without POSIX modes.
+  }
+  const next = {
+    ...run,
+    schema_version: "itp.run.v1",
+    updated_at: new Date().toISOString()
+  };
+  const file = runPath(next.run_id);
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(next, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, file);
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch {
+    // Best effort on platforms without POSIX modes.
+  }
+  writeState({ ...readState(), current_run_id: next.run_id });
+  return next;
+}
+
+function mergeRun(run, patch) {
+  return {
+    ...(run || {}),
+    ...patch,
+    auth: patch.auth === undefined ? run?.auth : { ...(run?.auth || {}), ...(patch.auth || {}) },
+    account: patch.account === undefined ? run?.account : { ...(run?.account || {}), ...(patch.account || {}) },
+    checkout: patch.checkout === undefined ? run?.checkout : { ...(run?.checkout || {}), ...(patch.checkout || {}) },
+    payment: patch.payment === undefined ? run?.payment : { ...(run?.payment || {}), ...(patch.payment || {}) },
+    grant: patch.grant === undefined ? run?.grant : { ...(run?.grant || {}), ...(patch.grant || {}) },
+    result: patch.result === undefined ? run?.result : { ...(run?.result || {}), ...(patch.result || {}) }
+  };
+}
+
+function updateRun(run, patch) {
+  return writeRun(mergeRun(run, patch));
+}
+
+function updateCurrentRun(patch, flags = {}) {
+  const run = readRun(flags.run_id || readState().current_run_id);
+  if (!run) return null;
+  return writeRun(mergeRun(run, patch));
+}
+
+function prepareSetupRun(flags, options) {
+  const explicitRunId = flags.run_id || null;
+  const state = readState();
+  let run = explicitRunId ? readRun(explicitRunId) : (!flags.new_run ? readRun(state.current_run_id) : null);
+  const reusable = run
+    && !["done", "installed", "failed", "cancelled"].includes(run.status)
+    && run.phase !== "done"
+    && (!run.plan_id || run.plan_id === options.plan)
+    && (options.plan || !run.credits || Number(run.credits) === Number(options.credits || 0))
+    && (!run.payment_method || run.payment_method === options.method);
+  if (reusable) {
+    return writeRun(mergeRun(run, {
+      target: options.target,
+      plan_id: options.plan,
+      credits: options.credits,
+      purchase_kind: options.plan ? "plan" : "custom",
+      payment_method: options.method,
+      agent_host: flags.host || run.agent_host || null,
+      agent_display: flags.display || run.agent_display || null,
+      agent_qr_format: flags.qr_format || run.agent_qr_format || null,
+      install_runtime: Boolean(options.install_runtime),
+      status: "running"
+    }));
+  }
+  if (flags.resume && explicitRunId && !run) {
+    throw new Error(`run not found: ${explicitRunId}`);
+  }
+  const runId = explicitRunId || `run_${cryptoRandom()}`;
+  return writeRun({
+    schema_version: "itp.run.v1",
+    run_id: runId,
+    created_at: new Date().toISOString(),
+    api_base: apiBase(flags),
+    target: options.target,
+    install_runtime: Boolean(options.install_runtime),
+    plan_id: options.plan,
+    credits: options.credits,
+    purchase_kind: options.plan ? "plan" : "custom",
+    payment_method: options.method,
+    agent_host: flags.host || null,
+    agent_display: flags.display || null,
+    agent_qr_format: flags.qr_format || null,
+    idempotency_key: flags.idempotency_key || `setup:${runId}:${options.plan || `credits-${options.credits}`}`,
+    phase: "new",
+    status: "running",
+    safe_summary: "Setup started."
+  });
+}
+
+async function withStateLock(fn) {
+  ensureConfigDir();
+  const staleMs = 10 * 60 * 1000;
+  try {
+    const stat = fs.statSync(LOCK_PATH);
+    const lock = readJSON(LOCK_PATH, {});
+    if ((lock.pid && !processIsRunning(lock.pid)) || Date.now() - stat.mtimeMs > staleMs) {
+      fs.unlinkSync(LOCK_PATH);
+    }
+  } catch {
+    // No lock or unreadable stale state.
+  }
+  let fd;
+  try {
+    fd = fs.openSync(LOCK_PATH, "wx", 0o600);
+    fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, started_at: new Date().toISOString() }));
+  } catch {
+    throw new Error("another itp setup/status operation is running; retry shortly or remove stale ~/.itp/state.lock");
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+  try {
+    return await fn();
+  } finally {
+    try {
+      fs.unlinkSync(LOCK_PATH);
+    } catch {
+      // Best effort cleanup.
+    }
+  }
 }
 
 function readCredentials() {
@@ -1273,6 +2305,7 @@ function grantSecretRef(grantId) {
 }
 
 function detectNativeCredentialStore() {
+  if (!shouldUseNativeCredentialStore()) return "file";
   if (process.platform === "darwin" && commandExists("security")) return "macos-keychain";
   if (process.platform === "linux" && commandExists("secret-tool")) return "secret-tool";
   return "unavailable";
@@ -1280,6 +2313,9 @@ function detectNativeCredentialStore() {
 
 function writeNativeSecret(ref, secret) {
   if (!secret) return { ok: false, error: "empty secret" };
+  if (!shouldUseNativeCredentialStore()) {
+    return { ok: false, error: "native credential store disabled for non-interactive agent host" };
+  }
   if (process.platform === "darwin" && commandExists("security")) {
     try {
       execFileSync("security", [
@@ -1313,6 +2349,17 @@ function writeNativeSecret(ref, secret) {
     }
   }
   return { ok: false, error: "native credential store unavailable" };
+}
+
+function shouldUseNativeCredentialStore() {
+  const store = String(process.env.ITP_CREDENTIAL_STORE || "").toLowerCase();
+  if (store === "file") return false;
+  if (store === "native" || store === "keychain" || store === "secret-tool") return true;
+  const disabled = String(process.env.ITP_DISABLE_NATIVE_CREDENTIAL_STORE || "").toLowerCase();
+  if (["1", "true", "yes"].includes(disabled)) return false;
+  if (process.env.CODEX_CI || process.env.CODEX_SHELL || process.env.CODEX_THREAD_ID) return false;
+  if (process.env.CI && !process.env.GITHUB_ACTIONS) return false;
+  return true;
 }
 
 function readNativeSecret(store, ref) {
@@ -1371,6 +2418,17 @@ function deleteNativeSecret(store, ref) {
 function commandExists(command) {
   try {
     execFileSync("which", [command], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function processIsRunning(pid) {
+  const numericPid = Number(pid);
+  if (!Number.isInteger(numericPid) || numericPid <= 0) return false;
+  try {
+    process.kill(numericPid, 0);
     return true;
   } catch {
     return false;
@@ -1465,7 +2523,7 @@ function output(value) {
 }
 
 function outputError(error) {
-  console.error(JSON.stringify({ success: false, message: error.message }, null, 2));
+  console.error(JSON.stringify({ success: false, message: safeErrorMessage(error) }, null, 2));
 }
 
 function maskSecret(secret) {
