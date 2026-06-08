@@ -221,6 +221,35 @@ Local and sandbox payment tests use real Alipay sandbox credentials and
 `--method alipay`. Fake/mock/offline flows are developer-only simulation hooks
 and are intentionally omitted from the normal user flow.
 
+For the ItPay sandbox buyer flow, agents should use the public buyer commands:
+
+```bash
+itp buy var_alipay_sandbox_cny1 --sandbox --email buyer@example.com --phone +8613800000000 --no-wait --json
+itp buyer payment wait <payment_intent_id> --json
+itp buyer checkout status <checkout_id> --json
+```
+
+Alipay sandbox responses expose a stable `payment_entry_url` for browser/status
+fallback and a tokenized `qr_image_url` for the human scanner. Render or download
+`qr_image_url`; do not turn `payment_entry_url` into a QR code. If the Alipay
+sandbox app reports "order not found", ask the API for a fresh display QR:
+
+```bash
+itp buyer payment refresh-qr <payment_intent_id> --reason order-not-found --json
+```
+
+`wait.timeout` from `/events/wait` is one long-poll cycle timing out, not a
+payment failure. The CLI heartbeat reports this as `still_waiting` and continues
+until the overall command timeout or a verified payment event. Ops-only sandbox
+commands such as `itp ops sandbox worker run-once --json` require the sandbox ops
+token and are not part of normal buyer/agent authority.
+
+Live checkpoint on 2026-06-08: `itp buy ... --no-wait --json` created an Alipay
+sandbox payment intent, the human scanned the `qr_image_url` SVG directly with
+the Alipay sandbox app, public notify reached `/v1/alipay/sandbox/notify`, and
+`itp buyer payment wait` returned `payment_intent.verified` without query
+recovery.
+
 Manual flow starts with Alipay-bound agent authentication:
 
 ```bash

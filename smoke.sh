@@ -55,6 +55,16 @@ HOME="$TMP_HOME" "$TMP_PREFIX/bin/itp" skill show | grep -q "VoltaGent / ITPay A
 HOME="$TMP_HOME" "$ROOT/bin/itp" --help >/dev/null
 HELP=$(HOME="$TMP_HOME" "$ROOT/bin/itp" --help)
 printf '%s' "$HELP" | node -e 'let data="";process.stdin.on("data",c=>data+=c);process.stdin.on("end",()=>{const json=JSON.parse(data); if (!json.commands.includes("keys rotate --grant <grant_id>") || !json.commands.includes("checkout create --plan credit-300 --method alipay --idempotency-key <uuid>") || !json.commands.includes("checkout list --limit 20") || !json.commands.includes("setup --credits 100 --method alipay") || !json.commands.includes("setup --credits 100 --target codex --method alipay --install-runtime") || !json.commands.includes("status --json") || !json.commands.includes("resume --json") || !json.commands.includes("skill show")) process.exit(1);})'
+printf '%s' "$HELP" | node -e 'let data="";process.stdin.on("data",c=>data+=c);process.stdin.on("end",()=>{const json=JSON.parse(data); for (const command of ["buy var_alipay_sandbox_cny1 --sandbox --email buyer@example.com --phone +8613800000000 --json","buyer payment wait <payment_intent_id> --json","buyer payment refresh-qr <payment_intent_id> --reason order-not-found --json","buyer deliveries list --checkout <checkout_id> --json","ops sandbox worker run-once --json"]) { if (!json.commands.includes(command)) process.exit(1); }})'
+BUYER_AUTH_STATUS=$(HOME="$TMP_HOME" "$ROOT/bin/itp" buyer auth status --json)
+printf '%s' "$BUYER_AUTH_STATUS" | node -e 'let data="";process.stdin.on("data",c=>data+=c);process.stdin.on("end",()=>{const json=JSON.parse(data); if (json.schema_version !== "itp.buyer.v1" || json.auth_required_for_discovery !== false) process.exit(1); if (data.toLowerCase().includes("ops-token") || data.toLowerCase().includes("sandbox_ops_token")) process.exit(1);})'
+SNAPSHOT_VERSION_TRAP=$(HOME="$TMP_HOME" "$ROOT/bin/itp" buyer shelf snapshot --version dummy --json 2>/dev/null || true)
+if printf '%s' "$SNAPSHOT_VERSION_TRAP" | grep -q '"version"'; then
+  echo "buyer shelf snapshot --version was intercepted by top-level version handler" >&2
+  exit 1
+fi
+CHECKOUT_STATUS_TRAP=$(HOME="$TMP_HOME" "$ROOT/bin/itp" buyer checkout status --json 2>&1 >/dev/null || true)
+printf '%s' "$CHECKOUT_STATUS_TRAP" | grep -q "checkout_id is required"
 AGENT_STATUS=$(HOME="$TMP_HOME" "$ROOT/bin/itp" status --json)
 printf '%s' "$AGENT_STATUS" | node -e 'let data="";process.stdin.on("data",c=>data+=c);process.stdin.on("end",()=>{const json=JSON.parse(data); if (json.schema_version !== "itp.agent.v1" || json.status !== "unauthenticated" || json.secrets.raw_key_included !== false) process.exit(1);})'
 AUTH_STATUS=$(HOME="$TMP_HOME" "$ROOT/bin/itp" auth status --json)

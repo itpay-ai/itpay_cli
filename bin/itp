@@ -27,7 +27,7 @@ main().catch((error) => {
 
 async function main() {
   const args = process.argv.slice(2);
-  if (args.includes("--version") || args[0] === "version") {
+  if ((args.length === 1 && args[0] === "--version") || args[0] === "version") {
     output({ version: VERSION });
     return;
   }
@@ -47,8 +47,22 @@ async function main() {
     await plansList(parseFlags(args.slice(1)));
     return;
   }
-  if (group === "setup" || group === "buy") {
+  if (group === "setup") {
     await setup(parseFlags(args.slice(1)));
+    return;
+  }
+  if (group === "buy") {
+    const buyFlags = parseFlags(command && String(command).startsWith("--") ? args.slice(1) : rest);
+    if (command && !String(command).startsWith("--")) buyFlags.selection = command;
+    await buyerBuy(buyFlags);
+    return;
+  }
+  if (group === "buyer") {
+    await buyer(command, rest, parseFlags(rest));
+    return;
+  }
+  if (group === "ops") {
+    await ops(command, rest, parseFlags(rest));
     return;
   }
   if (group === "status") {
@@ -182,6 +196,24 @@ async function main() {
           "setup --plan credit-300 --method alipay",
           "setup --plan credit-300 --method alipay --host gemini --display chat --json",
           "setup --credits 100 --target codex --method alipay --install-runtime",
+          "buy var_alipay_sandbox_cny1 --sandbox --email buyer@example.com --phone +8613800000000 --json",
+          "buy var_alipay_sandbox_cny1 --sandbox --email buyer@example.com --phone +8613800000000 --no-wait --json",
+          "buyer catalog search --query macau --json",
+          "buyer catalog get --variant var_alipay_sandbox_cny1 --json",
+          "buyer shelf manifest --json",
+          "buyer shelf snapshot --version <catalog_version> --json",
+          "buyer shelf delta --since <catalog_version> --json",
+          "buyer checkout create --variant var_alipay_sandbox_cny1 --method alipay --email buyer@example.com --phone +8613800000000 --json",
+          "buyer checkout status <checkout_id> --json",
+          "buyer checkout resume <checkout_id> --json",
+          "buyer auth status --json",
+          "buyer payment wait <payment_intent_id> --json",
+          "buyer payment refresh-qr <payment_intent_id> --reason order-not-found --json",
+          "buyer deliveries list --checkout <checkout_id> --json",
+          "buyer deliveries show <delivery_id> --checkout <checkout_id> --json",
+          "ops sandbox worker run-once --json",
+          "ops sandbox recover-alipay-once --json",
+          "ops sandbox payment query <payment_intent_id> --json",
           "status --json",
           "resume --json",
           "resume --run-id <run_id> --host gemini --display none --json",
@@ -464,6 +496,409 @@ async function setup(flags) {
           runtime_install_command: runtimeInstall.command
         }
     }));
+  });
+}
+
+async function buyerBuy(flags) {
+  const selectionID = flags.selection || flags.variant || flags.catalog_variant_id || flags.item || flags.catalog_item_id;
+  if (!selectionID) throw new Error("catalog variant id is required, for example: itp buy var_alipay_sandbox_cny1 --sandbox --email buyer@example.com --phone +8613800000000 --json");
+  const selection = await resolveBuyerCatalogSelection(selectionID, flags);
+  const checkout = await createBuyerCheckout(selection, flags);
+  const intent = await createBuyerPaymentIntent(checkout.checkout_id, flags);
+  await renderItPayPaymentAction(intent, flags);
+
+  if (flags.no_wait || flags.no_wait_payment) {
+    output(buyerRunOutput({
+      status: "waiting_user_payment",
+      selection,
+      checkout,
+      payment_intent: intent,
+      agent_next_actions: intent.agent_next_actions || ["wait_payment"],
+      next: { command: cliCommand("buyer", "payment", "wait", intent.payment_intent_id, "--json") }
+    }));
+    return;
+  }
+
+  const event = await waitBuyerPayment(intent, flags);
+  const delivery = await waitBuyerDelivery(checkout.checkout_id, flags);
+  const delivered = isBuyerDeliveryComplete(delivery);
+  output(buyerRunOutput({
+    status: delivered ? "delivery_claimable" : event.event_type === "payment_intent.verified" ? "payment_verified" : "waiting_user_payment",
+    selection,
+    checkout: delivery.checkout || checkout,
+    payment_intent: intent,
+    payment_event: event,
+    delivery: delivery.delivery || delivery.checkout?.delivery || checkout.delivery || null,
+    agent_next_actions: delivery.checkout?.agent_next_actions || event.agent_next_actions || intent.agent_next_actions || ["poll_checkout"],
+    next: delivered
+      ? { type: "human_check_email", safe_for_agent: true }
+      : { command: cliCommand("buyer", "checkout", "status", checkout.checkout_id, "--json"), safe_for_agent: true }
+  }));
+}
+
+async function buyer(command, rest, flags) {
+  const subcommand = rest[0] && !String(rest[0]).startsWith("--") ? rest[0] : "";
+  if (command === "catalog") {
+    if (subcommand === "search") {
+      const query = flags.query || flags.q || "";
+      const params = new URLSearchParams();
+      if (query) params.set("q", query);
+      if (flags.page_size) params.set("page_size", String(flags.page_size));
+      if (flags.cursor) params.set("cursor", String(flags.cursor));
+      output(await coreApi(`/v1/catalog/search${queryString(params)}`, { method: "GET" }, flags));
+      return;
+    }
+    if (subcommand === "get") {
+      const selectionID = flags.variant || flags.catalog_variant_id || flags.item || flags.catalog_item_id || rest[1];
+      output(await resolveBuyerCatalogSelection(selectionID, flags));
+      return;
+    }
+  }
+  if (command === "shelf") {
+    if (subcommand === "manifest") {
+      output(await coreApi("/v1/public/shelf/manifest", { method: "GET" }, flags));
+      return;
+    }
+    if (subcommand === "snapshot") {
+      const version = flags.version || positional(rest, 1);
+      if (!version) throw new Error("snapshot version is required");
+      output(await coreApi(`/v1/public/shelf/snapshots/${encodeURIComponent(version)}`, { method: "GET" }, flags));
+      return;
+    }
+    if (subcommand === "delta") {
+      const since = flags.since || positional(rest, 1);
+      if (!since) throw new Error("delta --since version is required");
+      const params = new URLSearchParams({ since });
+      output(await coreApi(`/v1/public/shelf/delta?${params.toString()}`, { method: "GET" }, flags));
+      return;
+    }
+  }
+  if (command === "checkout") {
+    if (subcommand === "create") {
+      const selectionID = flags.variant || flags.catalog_variant_id || flags.item || flags.catalog_item_id;
+      const selection = await resolveBuyerCatalogSelection(selectionID, flags);
+      const checkout = await createBuyerCheckout(selection, flags);
+      output(buyerRunOutput({ status: "checkout_created", selection, checkout, agent_next_actions: checkout.agent_next_actions || ["create_payment_intent"] }));
+      return;
+    }
+    if (subcommand === "status") {
+      const checkoutID = flags.checkout || flags.checkout_id || positional(rest, 1) || readState().last_core_checkout_id;
+      if (!checkoutID) throw new Error("checkout_id is required");
+      const checkout = await getBuyerCheckout(checkoutID, flags);
+      output(buyerRunOutput({ status: checkout.delivery_status || checkout.status, checkout, delivery: checkout.delivery, agent_next_actions: checkout.agent_next_actions }));
+      return;
+    }
+    if (subcommand === "resume") {
+      const checkoutID = flags.checkout || flags.checkout_id || positional(rest, 1) || readState().last_core_checkout_id;
+      if (!checkoutID) throw new Error("checkout_id is required");
+      const checkout = await getBuyerCheckout(checkoutID, flags);
+      if (checkout.payment_intent_id) {
+        const intent = await getBuyerPaymentIntent(checkout.payment_intent_id, flags);
+        output(buyerRunOutput({ status: intent.status === "verified" ? "payment_verified" : "waiting_user_payment", checkout, payment_intent: intent, agent_next_actions: intent.agent_next_actions || checkout.agent_next_actions || ["wait_payment"] }));
+        return;
+      }
+      if (checkout.agent_next_actions?.includes("create_payment_intent") || checkout.next_required_action === "create_payment_intent") {
+        const intent = await createBuyerPaymentIntent(checkout.checkout_id, flags);
+        await renderItPayPaymentAction(intent, flags);
+        output(buyerRunOutput({ status: "waiting_user_payment", checkout, payment_intent: intent, agent_next_actions: intent.agent_next_actions || ["wait_payment"] }));
+        return;
+      }
+      output(buyerRunOutput({ status: checkout.delivery_status || checkout.status, checkout, delivery: checkout.delivery, agent_next_actions: checkout.agent_next_actions }));
+      return;
+    }
+  }
+  if (command === "payment" && subcommand === "wait") {
+    const paymentIntentID = flags.payment_intent || flags.payment_intent_id || positional(rest, 1) || readState().last_core_payment_intent_id;
+    if (!paymentIntentID) throw new Error("payment_intent_id is required");
+    const intent = await getBuyerPaymentIntent(paymentIntentID, flags);
+    const event = intent.status === "verified"
+      ? { event_type: "payment_intent.verified", payment_intent_id: paymentIntentID, agent_next_actions: intent.agent_next_actions || ["poll_checkout"] }
+      : await waitBuyerPayment(intent, flags);
+    output(buyerRunOutput({ status: event.event_type === "payment_intent.verified" ? "payment_verified" : "waiting_user_payment", payment_intent: intent, payment_event: event, agent_next_actions: event.agent_next_actions || intent.agent_next_actions }));
+    return;
+  }
+  if (command === "payment" && subcommand === "refresh-qr") {
+    const paymentIntentID = flags.payment_intent || flags.payment_intent_id || positional(rest, 1) || readState().last_core_payment_intent_id;
+    if (!paymentIntentID) throw new Error("payment_intent_id is required");
+    const refreshed = await refreshBuyerPaymentQR(paymentIntentID, flags);
+    await renderItPayPaymentAction(refreshed, flags);
+    output(buyerRunOutput({
+      status: refreshed.status === "verified" ? "payment_verified" : "waiting_user_payment",
+      payment_intent: refreshed,
+      agent_next_actions: refreshed.agent_next_actions || ["wait_payment"],
+      next: refreshed.status === "verified"
+        ? { command: cliCommand("buyer", "checkout", "status", refreshed.checkout_id, "--json"), safe_for_agent: true }
+        : { command: cliCommand("buyer", "payment", "wait", refreshed.payment_intent_id, "--json"), safe_for_agent: true }
+    }));
+    return;
+  }
+  if (command === "deliveries") {
+    if (subcommand === "list") {
+      const checkoutID = flags.checkout || flags.checkout_id || readState().last_core_checkout_id;
+      if (!checkoutID) throw new Error("--checkout is required");
+      const checkout = await getBuyerCheckout(checkoutID, flags);
+      output(buyerDeliveryListOutput(checkout));
+      return;
+    }
+    if (subcommand === "show") {
+      const checkoutID = flags.checkout || flags.checkout_id || readState().last_core_checkout_id;
+      if (!checkoutID) throw new Error("--checkout is required for agent-safe delivery status");
+      const checkout = await getBuyerCheckout(checkoutID, flags);
+      output({
+        schema_version: "itp.buyer.v1",
+        status: checkout.delivery?.status || checkout.delivery_status,
+        delivery_id: positional(rest, 1) || flags.delivery || flags.delivery_id || null,
+        checkout_id: checkout.checkout_id,
+        delivery: checkout.delivery || null,
+        agent_next_actions: checkout.agent_next_actions || ["stop_check_email"],
+        secrets: { raw_content_included: false, claim_token_included: false }
+      });
+      return;
+    }
+  }
+  if (command === "auth" && subcommand === "status") {
+    output({
+      schema_version: "itp.buyer.v1",
+      status: "public_purchase_mode",
+      authenticated: false,
+      auth_required_for_discovery: false,
+      note: "CORE-027 buyer CLI does not expose profile values; first-purchase identity is handled by human QR in later slices."
+    });
+    return;
+  }
+  throw new Error(`unknown buyer command: ${[command, subcommand].filter(Boolean).join(" ") || ""}`);
+}
+
+async function ops(command, rest, flags) {
+  if (command !== "sandbox") throw new Error(`unknown ops command: ${command || ""}`);
+  const area = rest[0];
+  const action = rest[1];
+  if (area === "worker" && action === "run-once") {
+    output(await coreApi("/v1/sandbox/workers/run-once", { method: "POST", ops: true }, flags));
+    return;
+  }
+  if (area === "recover-alipay-once") {
+    output(await coreApi("/v1/local/workers/recover-alipay-sandbox-once", { method: "POST", ops: true }, flags));
+    return;
+  }
+  if (area === "payment" && action === "query") {
+    const paymentIntentID = flags.payment_intent || flags.payment_intent_id || positional(rest, 2);
+    if (!paymentIntentID) throw new Error("payment_intent_id is required");
+    output(await coreApi(`/v1/payment-intents/${encodeURIComponent(paymentIntentID)}/alipay-sandbox-query`, { method: "POST", ops: true }, flags));
+    return;
+  }
+  throw new Error(`unknown ops sandbox command: ${rest.join(" ")}`);
+}
+
+async function resolveBuyerCatalogSelection(selectionID, flags = {}) {
+  if (!selectionID) throw new Error("catalog selection id is required");
+  const snapshot = await coreApi("/v1/catalog/snapshot?page_size=100", { method: "GET" }, flags);
+  const selection = findCatalogSelection(snapshot, selectionID, flags);
+  if (!selection) throw new Error(`catalog selection not found: ${selectionID}`);
+  return selection;
+}
+
+function findCatalogSelection(snapshot, selectionID, flags = {}) {
+  const items = Array.isArray(snapshot?.items) ? snapshot.items : [];
+  const normalized = String(selectionID || "").trim();
+  const requestedOffer = flags.offer || flags.offer_id || "";
+  for (const item of items) {
+    const variants = Array.isArray(item.variants) ? item.variants : [];
+    for (const variant of variants) {
+      const matchesVariant = variant.catalog_variant_id === normalized;
+      const matchesItem = item.catalog_item_id === normalized;
+      const matchesOffer = variant.offer_id && variant.offer_id === normalized;
+      if (!matchesVariant && !matchesItem && !matchesOffer) continue;
+      if (requestedOffer && variant.offer_id !== requestedOffer) continue;
+      return {
+        catalog_item_id: item.catalog_item_id,
+        catalog_variant_id: variant.catalog_variant_id,
+        offer_id: requestedOffer || variant.offer_id,
+        catalog_version: item.catalog_version || snapshot.snapshot_version,
+        expected_amount: Number(flags.expected_amount || variant.amount_minor),
+        currency: flags.currency || variant.currency,
+        title: item.title,
+        variant_title: variant.title,
+        delivery: item.delivery || null,
+        tags: item.tags || [],
+        snapshot_version: snapshot.snapshot_version,
+        purchasable: variant.purchasable !== false
+      };
+    }
+  }
+  return null;
+}
+
+async function createBuyerCheckout(selection, flags = {}) {
+  if (!selection?.purchasable) throw new Error("catalog variant is not purchasable");
+  const deliveryContact = {};
+  if (flags.email) deliveryContact.email = flags.email;
+  if (flags.phone) deliveryContact.phone = flags.phone;
+  const missing = requiredDeliveryContactFields(selection).filter((field) => !deliveryContact[field]);
+  if (missing.length) {
+    throw new Error(`missing required delivery contact: ${missing.join(", ")}; provide ${missing.map((field) => `--${field} <value>`).join(" ")}`);
+  }
+  const checkout = await coreApi("/v1/checkouts", {
+    method: "POST",
+    idempotencyKey: flags.idempotency_key || `idem_cli_checkout_${cryptoRandom()}`,
+    body: {
+      catalog_item_id: selection.catalog_item_id,
+      catalog_variant_id: selection.catalog_variant_id,
+      offer_id: selection.offer_id,
+      catalog_version: selection.catalog_version,
+      expected_amount: selection.expected_amount,
+      currency: selection.currency,
+      client_reference_id: flags.client_reference_id || `cli_${Date.now()}`,
+      delivery_contact: deliveryContact
+    }
+  }, flags);
+  writeState({ ...readState(), last_core_checkout_id: checkout.checkout_id });
+  return checkout;
+}
+
+function requiredDeliveryContactFields(selection) {
+  const fields = selection?.delivery?.requires_contact_fields;
+  return Array.isArray(fields) ? fields.map((field) => String(field).trim()).filter(Boolean) : [];
+}
+
+async function createBuyerPaymentIntent(checkoutID, flags = {}) {
+  if (!checkoutID) throw new Error("checkout_id is required");
+  const method = String(flags.method || flags.payment_method || "alipay").toLowerCase();
+  const provider = String(flags.provider || flags.preferred_provider || method).toLowerCase();
+  const intent = await coreApi(`/v1/checkouts/${encodeURIComponent(checkoutID)}/payment-intents`, {
+    method: "POST",
+    idempotencyKey: flags.payment_idempotency_key || flags.idempotency_key || `idem_cli_payment_${cryptoRandom()}`,
+    body: {
+      payment_method_type: method,
+      preferred_provider: provider
+    }
+  }, flags);
+  writeState({ ...readState(), last_core_checkout_id: checkoutID, last_core_payment_intent_id: intent.payment_intent_id });
+  return intent;
+}
+
+async function getBuyerCheckout(checkoutID, flags = {}) {
+  return await coreApi(`/v1/checkouts/${encodeURIComponent(checkoutID)}`, { method: "GET" }, flags);
+}
+
+async function getBuyerPaymentIntent(paymentIntentID, flags = {}) {
+  return await coreApi(`/v1/payment-intents/${encodeURIComponent(paymentIntentID)}`, { method: "GET" }, flags);
+}
+
+async function refreshBuyerPaymentQR(paymentIntentID, flags = {}) {
+  const intent = await getBuyerPaymentIntent(paymentIntentID, flags);
+  if (intent.status === "verified") return intent;
+  const refreshURL = intent.qr_refresh_url;
+  if (!refreshURL) {
+    throw new Error("payment intent does not expose qr_refresh_url; refresh is supported only for refreshable Alipay sandbox QR intents");
+  }
+  return await coreApi(refreshURL, {
+    method: "POST",
+    body: {
+      reason: normalizeQRRefreshReasonForCLI(flags.reason || flags.refresh_reason || "order_not_found")
+    }
+  }, flags);
+}
+
+function normalizeQRRefreshReasonForCLI(reason) {
+  const normalized = String(reason || "").trim().toLowerCase().replaceAll("-", "_");
+  if (["order_not_found", "qr_unavailable", "manual_refresh", "human_open"].includes(normalized)) return normalized;
+  return "manual_refresh";
+}
+
+async function renderItPayPaymentAction(intent, flags = {}) {
+  const action = intent?.human_action ? { ...intent.human_action } : (intent?.payment_url ? {
+    id: intent.payment_intent_id,
+    title: "Scan with Alipay",
+    url: intent.payment_url,
+    expires_at: intent.qr?.expires_at
+  } : null);
+  if (action && (intent?.qr_image_url || intent?.qr?.image_url)) {
+    action.qr_image_url = intent.qr_image_url || intent.qr.image_url;
+    action.display_mode = intent.qr?.scan_mode || "provider_qr_image";
+    action.description = action.description || "Scan the ItPay-rendered QR image with the Alipay sandbox app.";
+  }
+  return await renderHumanAction(action, flags);
+}
+
+async function waitBuyerPayment(intent, flags = {}) {
+  const paymentIntentID = intent?.payment_intent_id || intent;
+  if (!paymentIntentID) throw new Error("payment_intent_id is required");
+  let cursor = flags.cursor || intent?.agent_wait?.cursor || "";
+  const waitURL = flags.wait_url || intent?.agent_wait?.wait_url || `/v1/payment-intents/${encodeURIComponent(paymentIntentID)}/events/wait`;
+  const timeoutMs = Number(flags.timeout || 900) * 1000;
+  const started = Date.now();
+  let lastHeartbeatAt = 0;
+  let lastEvent = null;
+  while (Date.now() - started < timeoutMs) {
+    const params = new URLSearchParams();
+    if (cursor) params.set("cursor", cursor);
+    params.set("timeout", String(flags.poll_timeout || "30s"));
+    const event = await coreApi(appendURLQuery(waitURL, params), { method: "GET" }, flags);
+    lastEvent = event;
+    cursor = event.cursor || cursor;
+    if (event.event_type === "payment_intent.verified") return event;
+    if (event.event_type && event.event_type !== "wait.timeout") return event;
+    lastHeartbeatAt = writeWaitHeartbeat({
+      kind: "ItPay payment notify",
+      idName: "payment_intent_id",
+      idValue: paymentIntentID,
+      status: event.event_type === "wait.timeout" ? "still_waiting" : (event.event_type || "still_waiting"),
+      action: intent?.human_action || null,
+      lastHeartbeatAt,
+      flags,
+      command: cliCommand("buyer", "payment", "wait", paymentIntentID, "--json")
+    });
+  }
+  return lastEvent || { event_type: "wait.timeout", payment_intent_id: paymentIntentID, cursor, agent_next_actions: ["wait_payment"] };
+}
+
+async function waitBuyerDelivery(checkoutID, flags = {}) {
+  const timeoutMs = Number(flags.delivery_timeout || 30) * 1000;
+  const started = Date.now();
+  let checkout = await getBuyerCheckout(checkoutID, flags);
+  while (!isBuyerDeliveryComplete({ checkout }) && Date.now() - started < timeoutMs) {
+    await sleep(Number(flags.delivery_poll_ms || 2000));
+    checkout = await getBuyerCheckout(checkoutID, flags);
+  }
+  return { checkout, delivery: checkout.delivery || null };
+}
+
+function isBuyerDeliveryComplete(result) {
+  const checkout = result?.checkout || result || {};
+  const delivery = checkout.delivery || result?.delivery || {};
+  return checkout.delivery_status === "delivered" ||
+    delivery.status === "delivery_claimable" ||
+    delivery.next_required_action === "check_email" ||
+    checkout.agent_next_actions?.includes("stop_check_email");
+}
+
+function buyerRunOutput(value = {}) {
+  return stripInternalBuyerFields({
+    schema_version: "itp.buyer.v1",
+    ...value,
+    secrets: {
+      raw_content_included: false,
+      claim_token_included: false,
+      provider_raw_payload_included: false
+    }
+  });
+}
+
+function buyerDeliveryListOutput(checkout) {
+  const delivery = checkout.delivery || null;
+  return buyerRunOutput({
+    status: delivery?.status || checkout.delivery_status,
+    checkout_id: checkout.checkout_id,
+    deliveries: delivery ? [{
+      checkout_id: checkout.checkout_id,
+      status: delivery.status,
+      next_required_action: delivery.next_required_action,
+      channels: delivery.channels || [],
+      artifact_status: delivery.artifact_status,
+      sensitive_content_redacted: delivery.sensitive_content_redacted !== false
+    }] : [],
+    agent_next_actions: checkout.agent_next_actions || []
   });
 }
 
@@ -1691,11 +2126,14 @@ function humanActionSummaryLines(action) {
     `Title: ${action.title || "Scan with Alipay"}`,
     `URL: ${action.url}`
   ];
+  if (action.qr_image_url) {
+    lines.push(`QR image: ${action.qr_image_url}`);
+  }
   if (action.fallback_text && !action.fallback_text.includes(action.url)) {
     lines.push(`Fallback: ${action.fallback_text}`);
   }
   if (action.expires_at) {
-    lines.push(`Expires at: ${new Date(Number(action.expires_at) * 1000).toISOString()}`);
+    lines.push(`Expires at: ${formatActionTime(action.expires_at)}`);
   }
   return lines;
 }
@@ -1719,6 +2157,7 @@ function writeWaitHeartbeat({ kind, idName, idValue, status, action, lastHeartbe
   const lines = [
     `ITP waiting for ${kind}: ${idName}=${idValue} status=${status}`,
     action?.url ? `URL: ${action.url}` : null,
+    action?.qr_image_url ? `QR image: ${action.qr_image_url}` : null,
     command ? `Resume command: ${command}` : null
   ].filter(Boolean);
   process.stderr.write(`\n${lines.join("\n")}\n\n`);
@@ -1727,13 +2166,19 @@ function writeWaitHeartbeat({ kind, idName, idValue, status, action, lastHeartbe
 
 async function renderHumanAction(action, flags = {}) {
   if (!action?.url) return null;
+  const qrImageURL = action.qr_image_url || action.qr?.image_url || "";
   const mode = String(flags.display || process.env.ITP_DISPLAY || "").toLowerCase() || "auto";
-  if (mode === "none" || mode === "json") return { rendered: false, mode };
+  if (flags.json || mode === "none" || mode === "json") return { rendered: false, mode: flags.json ? "json" : mode };
   const host = String(process.env.ITP_HOST || flags.host || "").toLowerCase();
   if (["discord", "telegram", "whatsapp"].includes(host)) {
     return { rendered: false, mode: "chat-json", host };
   }
   if (shouldUseAgentTextQR(flags)) {
+    if (qrImageURL) {
+      attachAgentQRImage(action, qrImageURL);
+      persistHumanAction(action, flags);
+      return { rendered: false, mode: "agent-image-qr", host, outputs: ["qr_image_url"] };
+    }
     await attachAgentTextQR(action, flags);
     persistHumanAction(action, flags);
     return { rendered: false, mode: "agent-text-qr", host, outputs: ["agent_text_qr"] };
@@ -1742,7 +2187,7 @@ async function renderHumanAction(action, flags = {}) {
   const renderResult = { rendered: false, mode, outputs: [] };
   writeHumanActionSummary(action);
   if ((mode === "auto" || mode === "browser") && shouldOpenBrowser(flags)) {
-    if (openBrowser(action.url)) {
+    if (openBrowser(qrImageURL || action.url)) {
       renderResult.rendered = true;
       renderResult.outputs.push("browser");
     }
@@ -1750,12 +2195,22 @@ async function renderHumanAction(action, flags = {}) {
   }
 
   if (mode === "file" || flags.qr_file || process.env.ITP_QR_FILE) {
-    const file = flags.qr_file || process.env.ITP_QR_FILE || path.join(os.tmpdir(), `itp-${action.id || "qr"}.png`);
-    await QRCode.toFile(file, action.url, { errorCorrectionLevel: "M", width: 512, margin: 2 });
+    const file = flags.qr_file || process.env.ITP_QR_FILE || path.join(os.tmpdir(), `itp-${action.id || "qr"}.${qrImageURL ? "svg" : "png"}`);
+    if (qrImageURL) {
+      await downloadQRImage(qrImageURL, file, flags);
+    } else {
+      await QRCode.toFile(file, action.url, { errorCorrectionLevel: "M", width: 512, margin: 2 });
+    }
     process.stderr.write(`Alipay QR image: ${file}\n`);
     renderResult.rendered = true;
     renderResult.outputs.push(file);
     if (mode === "file") return renderResult;
+  }
+
+  if (qrImageURL) {
+    process.stderr.write(`Alipay QR image URL: ${qrImageURL}\n`);
+    renderResult.outputs.push("qr_image_url");
+    return renderResult;
   }
 
   if ((mode === "auto" || mode === "terminal") && shouldRenderTerminalQR(host)) {
@@ -1768,7 +2223,7 @@ async function renderHumanAction(action, flags = {}) {
     if (action.description) process.stderr.write(`${action.description}\n`);
     process.stderr.write(`${qr}\n`);
     process.stderr.write(`Alipay action URL: ${action.url}\n`);
-    if (action.expires_at) process.stderr.write(`Expires at: ${new Date(Number(action.expires_at) * 1000).toISOString()}\n`);
+    if (action.expires_at) process.stderr.write(`Expires at: ${formatActionTime(action.expires_at)}\n`);
     renderResult.rendered = true;
     renderResult.outputs.push("terminal");
     return renderResult;
@@ -1777,6 +2232,19 @@ async function renderHumanAction(action, flags = {}) {
   process.stderr.write(`${action.fallback_text || `Open Alipay URL: ${action.url}`}\n`);
   renderResult.outputs.push("url");
   return renderResult;
+}
+
+function formatActionTime(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "number" || /^[0-9]+$/.test(String(value))) {
+    const numeric = Number(value);
+    const millis = numeric > 100000000000 ? numeric : numeric * 1000;
+    const date = new Date(millis);
+    if (!Number.isNaN(date.getTime())) return date.toISOString();
+  }
+  const date = new Date(String(value));
+  if (!Number.isNaN(date.getTime())) return date.toISOString();
+  return String(value);
 }
 
 function shouldUseAgentTextQR(flags = {}) {
@@ -1788,6 +2256,23 @@ function shouldUseAgentTextQR(flags = {}) {
 function shouldReturnAfterAgentTextQR(flags = {}) {
   if (flags.wait || flags.wait_human) return false;
   return shouldUseAgentTextQR(flags);
+}
+
+function attachAgentQRImage(action, qrImageURL) {
+  if (!action || !qrImageURL) return action;
+  action.qr_image_url = qrImageURL;
+  if (!Array.isArray(action.display)) {
+    action.display = [];
+  }
+  if (!action.display.some((item) => item?.type === "image")) {
+    action.display.push({
+      type: "image",
+      format: "svg",
+      url: qrImageURL,
+      instructions: "Render this QR image for the human to scan with the Alipay sandbox app. Do not encode the ItPay entry URL as a QR."
+    });
+  }
+  return action;
 }
 
 async function attachAgentTextQR(action, flags = {}) {
@@ -1823,6 +2308,27 @@ async function attachAgentTextQR(action, flags = {}) {
     });
   }
   return action;
+}
+
+async function downloadQRImage(qrImageURL, file, flags = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), apiTimeoutMs(flags));
+  let response;
+  try {
+    response = await fetch(qrImageURL, { method: "GET", signal: controller.signal });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`QR image download timed out: ${qrImageURL}`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!response.ok) {
+    throw new Error(`QR image download failed: ${response.status}`);
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  fs.writeFileSync(file, bytes);
 }
 
 function persistHumanAction(action, flags = {}) {
@@ -1916,6 +2422,95 @@ async function admin(command, rest, flags) {
     return;
   }
   throw new Error(`unknown admin command: ${command || ""}`);
+}
+
+async function coreApi(pathname, options = {}, flags = {}) {
+  const headers = { "Content-Type": "application/json" };
+  if (options.idempotencyKey || flags.idempotency_key) {
+    headers["Idempotency-Key"] = String(options.idempotencyKey || flags.idempotency_key);
+  }
+  if (options.ops) {
+    headers["X-ItPay-Ops-Token"] = sandboxOpsToken(flags);
+  }
+  if (flags.request_id) headers["X-Request-ID"] = String(flags.request_id);
+  if (flags.correlation_id) headers["X-Correlation-ID"] = String(flags.correlation_id);
+  const targetURL = coreURL(pathname, flags);
+  const timeoutMs = apiTimeoutMs(flags);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetch(targetURL, {
+      method: options.method || "GET",
+      headers,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`request timed out after ${Math.ceil(timeoutMs / 1000)}s: ${targetURL}`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+  const text = await response.text();
+  let payload = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = { text };
+    }
+  }
+  if (!response.ok || payload.success === false) {
+    throw new Error(payload.error || payload.message || `request failed: ${response.status}`);
+  }
+  return payload.data ?? payload;
+}
+
+function coreURL(pathname, flags = {}) {
+  if (/^https?:\/\//i.test(String(pathname))) return String(pathname);
+  return `${coreApiBase(flags)}${pathname.startsWith("/") ? "" : "/"}${pathname}`;
+}
+
+function coreApiBase(flags = {}) {
+  const base = flags.api_base || flags.core_api_base || process.env.ITPAY_API_BASE || process.env.ITPAY_CORE_API_BASE || "http://127.0.0.1:18080";
+  return String(base).replace(/\/$/, "");
+}
+
+function sandboxOpsToken(flags = {}) {
+  const token = flags.ops_token || flags.sandbox_ops_token || process.env.ITPAY_SANDBOX_OPS_TOKEN || process.env.ITPAY_OPS_TOKEN;
+  if (!token) throw new Error("sandbox ops token is required; set ITPAY_SANDBOX_OPS_TOKEN or pass --ops-token");
+  return String(token);
+}
+
+function queryString(params) {
+  const raw = params.toString();
+  return raw ? `?${raw}` : "";
+}
+
+function appendURLQuery(target, params) {
+  const suffix = params.toString();
+  if (!suffix) return target;
+  return `${target}${String(target).includes("?") ? "&" : "?"}${suffix}`;
+}
+
+function positional(values, index) {
+  const value = values[index];
+  if (!value || String(value).startsWith("--")) return "";
+  return String(value);
+}
+
+function stripInternalBuyerFields(value) {
+  if (Array.isArray(value)) return value.map(stripInternalBuyerFields);
+  if (!value || typeof value !== "object") return value;
+  const result = {};
+  for (const [key, nested] of Object.entries(value)) {
+    if (key === "next_actions") continue;
+    result[key] = stripInternalBuyerFields(nested);
+  }
+  return result;
 }
 
 async function api(pathname, options, flags = {}) {

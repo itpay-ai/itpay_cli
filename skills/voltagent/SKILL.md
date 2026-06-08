@@ -23,6 +23,8 @@ credential handling.
 4. Never pass passwords in command-line arguments. Use `--password-stdin`.
 5. Do not invent payment links, QR codes, checkout IDs, order IDs, or grant IDs.
 6. Do not modify, shorten, summarize, re-encode, or rewrite Alipay payment QR URLs.
+   For ItPay Core sandbox payment responses, render `qr_image_url`; do not turn
+   `payment_entry_url` into a QR code.
 7. Do not trust "I paid" as proof of payment.
 8. Only `itp setup --json` returning `status=grant_ready` / `status=installed`, or `itp payment wait
    <checkout_id> --json` returning `status=grant_issued` / `status=grant_installed`
@@ -35,8 +37,9 @@ credential handling.
     starting a new setup.
 12. If `status` returns a `run_id` and a `next.command`, resume that run unless
     the user explicitly asks to abandon it.
-13. Use `human_action.display` to show Alipay auth/payment QR codes in the
-    current host. Do not ask the user to copy checkout IDs or grant IDs.
+13. Use `human_action.display` or `qr_image_url` to show Alipay auth/payment QR
+    codes in the current host. Do not ask the user to copy checkout IDs or grant
+    IDs.
 14. Showing a QR code is not completion. After showing auth or payment QR, keep
     waiting by leaving `setup` running or immediately executing the returned
     `next.command` until `status=grant_ready` / `status=installed` or a
@@ -229,6 +232,28 @@ runbook. If old CLI help, README text, or shell history mentions
 `--method fake`, `--mock-approve`, or `--offline`, ignore it unless the user
 literally asks for fake/mock/offline simulation. For this project, local sandbox
 testing is a real Alipay sandbox flow.
+
+For the ItPay Core sandbox buyer flow, use the buyer commands when they are
+available:
+
+```bash
+itp buy var_alipay_sandbox_cny1 --sandbox --email buyer@example.com --phone +8613800000000 --no-wait --json
+itp buyer payment wait <payment_intent_id> --json
+itp buyer checkout status <checkout_id> --json
+```
+
+The payment response contains `payment_entry_url` for browser/status fallback and
+`qr_image_url` for the human scanner. Show `qr_image_url`. If the Alipay sandbox
+app reports "order not found", refresh display only:
+
+```bash
+itp buyer payment refresh-qr <payment_intent_id> --reason order-not-found --json
+```
+
+If `/events/wait` returns `wait.timeout`, treat it as `still_waiting` for that
+long-poll cycle and keep waiting until the overall command timeout or a verified
+payment event. Do not use ops-only commands unless the user explicitly asks for
+operator testing and provides the sandbox ops environment.
 
 ## Login / Registration
 
