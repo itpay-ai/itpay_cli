@@ -1,0 +1,57 @@
+{
+  "schema_version": "itp.agent_doc.v1",
+  "role": "buyer",
+  "topic": "catalog-search",
+  "title": "Catalog Search For Buyer Agents",
+  "purpose": "Help the agent find public ItPay services without login and without expensive repeated full searches.",
+  "when_to_use": [
+    "The user describes a need but has not chosen a service.",
+    "The agent needs product and variant details before recommendation.",
+    "The agent needs to search the CORE-028 PUBG sandbox catalog pack."
+  ],
+  "required_state": {
+    "needs": ["search query or service intent"],
+    "must_not_need": ["buyer login", "payment intent", "ops token"]
+  },
+  "commands": [
+    {
+      "intent": "search public catalog by natural language query",
+      "command": "itp buyer catalog search --query \"吃鸡 情侣皮肤\" --json",
+      "success_signal": "response.products contains variants with id, title, price, metadata"
+    },
+    {
+      "intent": "get exact product details for a selected variant",
+      "command": "itp buyer catalog get --variant <variant_id> --json",
+      "success_signal": "response.selection.catalog_variant_id matches the selected variant"
+    },
+    {
+      "intent": "discover low-cost shelf sync endpoints for repeated reads",
+      "command": "itp buyer shelf manifest --json",
+      "success_signal": "response.snapshot_version and response.snapshot_url are present"
+    }
+  ],
+  "agent_rules": [
+    "Full search is allowed for explicit user search, not as a polling loop.",
+    "For repeated discovery, prefer shelf manifest/snapshot/delta.",
+    "Use product and variant metadata to explain options in user language.",
+    "Do not create checkout until the user intent maps to one selected variant."
+  ],
+  "forbidden": [
+    "Do not require login for discovery.",
+    "Do not invent catalog items or variant IDs.",
+    "Do not assume search result order means the user has approved purchase."
+  ],
+  "next_docs": [
+    {
+      "condition": "Need to recommend among variants",
+      "topic": "product-recommendation",
+      "command": "itp docs show product-recommendation --role buyer --json"
+    },
+    {
+      "condition": "The user has chosen a variant",
+      "topic": "cart-checkout",
+      "command": "itp docs show cart-checkout --role buyer --json"
+    }
+  ],
+  "search_terms": ["catalog", "search", "shelf", "product", "variant", "PUBG", "吃鸡", "情侣皮肤", "十连抽", "搜索", "商品"]
+}

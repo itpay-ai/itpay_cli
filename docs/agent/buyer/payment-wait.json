@@ -1,0 +1,54 @@
+{
+  "schema_version": "itp.agent_doc.v1",
+  "role": "buyer",
+  "topic": "payment-wait",
+  "title": "Payment Wait Contract",
+  "purpose": "Teach the agent to wait for human payment through the ItPay event wait contract instead of sleeping or guessing.",
+  "when_to_use": [
+    "The human is scanning or paying.",
+    "PaymentIntent status is waiting_user_payment.",
+    "The CLI returned agent_wait metadata."
+  ],
+  "required_state": {
+    "needs": ["payment_intent_id"],
+    "optional": ["cursor"],
+    "must_not_need": ["ops token", "provider query permission", "human text proof"]
+  },
+  "commands": [
+    {
+      "intent": "wait for payment verified event",
+      "command": "itp buyer payment wait <payment_intent_id> --json",
+      "success_signal": "response.payment_event.event_type == payment_intent.verified"
+    },
+    {
+      "intent": "resume checkout after verified event",
+      "command": "itp buyer checkout status <checkout_id> --json",
+      "success_signal": "response.delivery.status or response.checkout.status is returned"
+    }
+  ],
+  "agent_rules": [
+    "wait.timeout is a heartbeat, not a payment failure.",
+    "Continue waiting with the same payment_intent_id unless the command reaches its overall timeout or the user cancels.",
+    "Payment success is payment_intent.verified only.",
+    "After verified, poll checkout or delivery status."
+  ],
+  "forbidden": [
+    "Do not accept 'I paid' as proof.",
+    "Do not run provider query recovery from buyer flow.",
+    "Do not create a duplicate checkout merely because one wait cycle timed out.",
+    "Do not call worker run-once."
+  ],
+  "next_docs": [
+    {
+      "condition": "payment_intent.verified received",
+      "topic": "secure-delivery",
+      "command": "itp docs show secure-delivery --role buyer --json"
+    },
+    {
+      "condition": "wait timeout or interrupted agent run",
+      "topic": "recovery",
+      "command": "itp docs show recovery --role buyer --json"
+    }
+  ],
+  "search_terms": ["wait", "long poll", "timeout", "still waiting", "paid", "payment", "等待", "付款", "付款成功", "没返回", "一直等", "超时"]
+}

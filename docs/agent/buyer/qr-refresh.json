@@ -1,0 +1,51 @@
+{
+  "schema_version": "itp.agent_doc.v1",
+  "role": "buyer",
+  "topic": "qr-refresh",
+  "title": "QR Refresh Recovery",
+  "purpose": "Teach the agent how to refresh the display QR for scanner problems without changing payment truth.",
+  "when_to_use": [
+    "The human reports Alipay sandbox says order not found.",
+    "The QR expired or the wallet cannot load it.",
+    "The payment intent is still not verified."
+  ],
+  "required_state": {
+    "needs": ["payment_intent_id"],
+    "must_not_need": ["ops token", "provider query", "new checkout"]
+  },
+  "commands": [
+    {
+      "intent": "refresh the QR display for the same payment intent",
+      "command": "itp buyer payment refresh-qr <payment_intent_id> --reason order-not-found --json",
+      "success_signal": "response.payment_intent.qr_image_url is present"
+    },
+    {
+      "intent": "continue waiting after refresh",
+      "command": "itp buyer payment wait <payment_intent_id> --json",
+      "success_signal": "payment_event.event_type == payment_intent.verified"
+    }
+  ],
+  "agent_rules": [
+    "QR refresh is display recovery only.",
+    "Use the same payment_intent_id.",
+    "After refresh, continue waiting through the normal wait contract."
+  ],
+  "forbidden": [
+    "Do not treat refresh as paid.",
+    "Do not query Alipay from buyer flow.",
+    "Do not create a new checkout unless the user explicitly abandons the old one."
+  ],
+  "next_docs": [
+    {
+      "condition": "refreshed QR is visible",
+      "topic": "payment-wait",
+      "command": "itp docs show payment-wait --role buyer --json"
+    },
+    {
+      "condition": "refresh fails",
+      "topic": "recovery",
+      "command": "itp docs show recovery --role buyer --json"
+    }
+  ],
+  "search_terms": ["refresh", "order not found", "expired qr", "qr unavailable", "刷新", "订单不存在"]
+}

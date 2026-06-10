@@ -2,15 +2,17 @@ $ErrorActionPreference = "Stop"
 
 $SourceDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ItpBin = Join-Path $SourceDir "bin\itp"
-$SkillFile = Join-Path $SourceDir "skills\voltagent\SKILL.md"
+$SkillsDir = Join-Path $SourceDir "skills"
+$DocsDir = Join-Path $SourceDir "docs"
 $NodeModules = Join-Path $SourceDir "node_modules"
 $Prefix = if ($env:ITP_PREFIX) { $env:ITP_PREFIX } else { Join-Path $HOME ".local" }
 $TargetDir = Join-Path $Prefix "bin"
 $TargetScript = Join-Path $TargetDir "itp.js"
 $TargetCmd = Join-Path $TargetDir "itp.cmd"
 $ModuleTarget = Join-Path $TargetDir "node_modules"
-$SkillTargetDir = Join-Path $Prefix "share\itpay_cli\skills\voltagent"
-$SkillTarget = Join-Path $SkillTargetDir "SKILL.md"
+$ShareTargetDir = Join-Path $Prefix "share\itpay_cli"
+$SkillsTarget = Join-Path $ShareTargetDir "skills"
+$DocsTarget = Join-Path $ShareTargetDir "docs"
 
 if (!(Test-Path $ItpBin)) {
   throw "itp binary not found at $ItpBin"
@@ -24,9 +26,19 @@ if (Test-Path $NodeModules) {
   }
   Copy-Item -Recurse -Force $NodeModules $ModuleTarget
 }
-if (Test-Path $SkillFile) {
-  New-Item -ItemType Directory -Force -Path $SkillTargetDir | Out-Null
-  Copy-Item -Force $SkillFile $SkillTarget
+if (Test-Path $SkillsDir) {
+  if (Test-Path $SkillsTarget) {
+    Remove-Item -Recurse -Force $SkillsTarget
+  }
+  New-Item -ItemType Directory -Force -Path $ShareTargetDir | Out-Null
+  Copy-Item -Recurse -Force $SkillsDir $SkillsTarget
+}
+if (Test-Path $DocsDir) {
+  if (Test-Path $DocsTarget) {
+    Remove-Item -Recurse -Force $DocsTarget
+  }
+  New-Item -ItemType Directory -Force -Path $ShareTargetDir | Out-Null
+  Copy-Item -Recurse -Force $DocsDir $DocsTarget
 }
 Set-Content -Path $TargetCmd -Encoding ASCII -Value @"
 @echo off

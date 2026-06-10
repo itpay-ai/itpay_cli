@@ -1,6 +1,6 @@
 # ITPay CLI
 
-Open-source command line client and agent skill for the VoltaGent / ITPay agent-native model package flow.
+Open-source command line client, buyer skill, and agent-readable docs for ItPay agent-native commerce.
 
 This repository is intentionally small. It contains only the public local tooling needed by users and agents:
 
@@ -8,18 +8,19 @@ This repository is intentionally small. It contains only the public local toolin
 - npm package metadata
 - install scripts
 - smoke and local E2E scripts
-- VoltaGent agent skill prompt
+- ItPay buyer skill prompt
+- agent-readable CLI docs graph
 
 It does not contain the closed-source SaaS backend, database files, payment keys, model provider keys, user credentials, or deployment secrets.
 
 ## What This CLI Does
 
-`itp` lets a developer or coding agent buy a VoltaGent model package and receive the gateway base URLs / API credential without manually copying API keys through chat. Runtime config writing is optional.
+`itp` lets a developer or coding agent discover ItPay services, create cart-first checkouts, show QR payments, wait for verified payment, and report secure human delivery status without exposing raw keys or protected content to the agent. Legacy VoltaGent model-package setup remains available.
 
 Main flow:
 
 ```text
-register/login -> list plans -> create checkout -> wait payment -> receive grant/API credential -> optional runtime config install -> check balance/usage
+public catalog search -> explain/recommend -> UCP cart -> checkout -> QR payment -> wait verified -> redacted secure delivery status
 ```
 
 Supported runtime targets:
@@ -30,15 +31,17 @@ claude-code
 openclaw
 ```
 
-Default local API endpoint:
+Default legacy API endpoint:
 
 ```text
 http://localhost:3000
 ```
 
-Override it for staging or production:
+Override it for ItPay staging or production:
 
 ```bash
+export ITPAY_API_BASE=https://your-itpay-core.example.com
+export ITPAY_CORE_BASE_URL=https://your-itpay-core.example.com
 export VOLTAGENT_API_BASE=https://your-api.example.com
 ```
 
@@ -47,7 +50,9 @@ export VOLTAGENT_API_BASE=https://your-api.example.com
 ```text
 .
 ├── bin/itp                         # Node.js CLI entrypoint
-├── skills/voltagent/SKILL.md       # Agent skill instructions
+├── skills/itpay-buyer/SKILL.md     # Buyer agent quick-start skill
+├── skills/voltagent/SKILL.md       # Legacy VoltaGent compatibility skill
+├── docs/agent/buyer/*.json         # Agent-readable docs graph
 ├── install.sh                      # Unix user-level installer
 ├── install.ps1                     # Windows PowerShell installer
 ├── smoke.sh                        # Local CLI smoke test
@@ -115,29 +120,29 @@ npx itpay_cli --version
 
 ## Agent First Step
 
-If you are an AI agent, read the packaged VoltaGent skill before creating
-checkouts, asking the user to pay, installing runtime config, or diagnosing a
-grant:
+If you are an AI agent, read the packaged buyer skill before searching,
+creating carts, asking the user to pay, or reporting delivery:
 
 ```bash
-itp skill show
+itp skill show --role buyer --json
 ```
 
-For machine-readable access:
+Then load the quickstart docs page:
 
 ```bash
-itp skill show --json
+itp docs show quickstart --role buyer --json
 ```
 
-To locate the installed skill file:
+If confused, search the agent docs instead of guessing:
 
 ```bash
-itp skill path
+itp docs search "<question>" --role buyer --json
 ```
 
-The skill is the canonical agent runbook for safe payment, credential, install,
-and diagnosis behavior. Follow it exactly, especially the rules about `--json`,
-`--password-stdin`, verified payment status, and never exposing secrets.
+The skill is a quick-start directory and safety boundary. Detailed flow guidance
+lives in `itp docs ... --role buyer --json`. Each docs page contains
+`next_docs`, so an agent can read one small guide, act, then load the next guide
+from the current state.
 
 Before starting a new purchase, agents should inspect recoverable local state:
 
@@ -224,7 +229,10 @@ and are intentionally omitted from the normal user flow.
 For the ItPay sandbox buyer flow, agents should use the public buyer commands:
 
 ```bash
-itp buy var_alipay_sandbox_cny1 --sandbox --email buyer@example.com --phone +8613800000000 --no-wait --json
+itp buyer catalog search --query "吃鸡 情侣皮肤" --json
+itp buyer cart create --variant var_pubg_couple_skin_cny20 --json
+itp buyer checkout create --cart <cart_id> --email buyer@example.com --phone +8613800000000 --json
+itp buy var_pubg_couple_skin_cny20 --sandbox --email buyer@example.com --phone +8613800000000 --no-wait --json
 itp buyer payment wait <payment_intent_id> --json
 itp buyer checkout status <checkout_id> --json
 ```
@@ -357,31 +365,40 @@ itp grants install <grant_id> --target openclaw --json
 itp install openclaw --grant <grant_id> --json
 ```
 
-## Agent Skill
+## Agent Skill And Docs
 
-Installed agents can read the full skill at any time:
+Installed agents can read the buyer skill and docs graph at any time:
 
 ```bash
-itp skill show
-itp skill show --json
-itp skill path
+itp skill show --role buyer --json
+itp skill path --role buyer
+itp docs list --role buyer --json
+itp docs show quickstart --role buyer --json
+itp docs search "<question>" --role buyer --json
 ```
 
-Repository skill file:
+Repository files:
 
 ```text
+skills/itpay-buyer/SKILL.md
 skills/voltagent/SKILL.md
+docs/agent/buyer/*.json
 ```
 
-Agents should use the skill when the user asks to buy, recharge, install, configure, diagnose, or check VoltaGent / ITPay model packages.
+Agents should use the buyer skill when the user asks to search, buy, pay, or receive an ItPay service. Use the legacy VoltaGent skill only for the older model-package setup flow:
+
+```bash
+itp skill show --role voltagent --json
+```
 
 The skill rules are strict:
 
 - Do not invent payment links.
-- Do not ask users to paste API keys into chat.
+- Do not ask users to paste API keys, claim links, claim tokens, redeem codes, or raw keys into chat.
 - Use `--json` for agent-run commands.
-- Use `--password-stdin` for passwords.
-- Treat only `itp payment wait` returning `grant_issued` as verified delivery.
+- Use UCP cart-first checkout for CORE-028 buyer tests.
+- Treat only `payment_intent.verified` as payment success.
+- Report secure delivery as redacted status only.
 
 ## Local Backend E2E
 
@@ -480,7 +497,8 @@ Post-publish install test:
 TMP_PREFIX=$(mktemp -d)
 npm install -g --prefix "$TMP_PREFIX" itpay_cli
 "$TMP_PREFIX/bin/itp" --version
-"$TMP_PREFIX/bin/itp" skill show --json
+"$TMP_PREFIX/bin/itp" skill show --role buyer --json
+"$TMP_PREFIX/bin/itp" docs show quickstart --role buyer --json
 "$TMP_PREFIX/bin/itpay" --version
 "$TMP_PREFIX/bin/itpay_cli" --version
 ```
@@ -556,7 +574,7 @@ Typical update flow:
 ```bash
 git pull
 npm run check
-# edit bin/itp or skills/voltagent/SKILL.md
+# edit bin/itp, skills/itpay-buyer/SKILL.md, docs/agent/buyer/*.json, or skills/voltagent/SKILL.md
 npm run check
 npm pack --dry-run
 git status --short
@@ -569,6 +587,8 @@ For behavior changes, update both:
 
 ```text
 bin/itp
+docs/agent/buyer/*.json
+skills/itpay-buyer/SKILL.md
 skills/voltagent/SKILL.md
 ```
 
@@ -577,5 +597,7 @@ If the backend contract changes, update:
 ```text
 README.md
 e2e-local.sh
+docs/agent/buyer/*.json
+skills/itpay-buyer/SKILL.md
 skills/voltagent/SKILL.md
 ```

@@ -1,0 +1,72 @@
+{
+  "schema_version": "itp.agent_doc.v1",
+  "role": "buyer",
+  "topic": "quickstart",
+  "title": "ItPay Buyer Agent Quickstart",
+  "purpose": "Teach a new external agent the minimal safe flow for buying through ItPay.",
+  "when_to_use": [
+    "The agent has just installed the ItPay CLI or loaded the buyer skill.",
+    "The user wants the agent to search for a service, recommend an option, or buy through ItPay.",
+    "The agent is unsure which ItPay buyer command should come first."
+  ],
+  "required_state": {
+    "needs": ["itp CLI available"],
+    "must_not_need": ["ops token", "claim token", "raw key", "provider raw payload"]
+  },
+  "commands": [
+    {
+      "intent": "list the available agent docs topics",
+      "command": "itp docs list --role buyer --json",
+      "success_signal": "response.topics contains catalog-search, cart-checkout, payment-wait, secure-delivery"
+    },
+    {
+      "intent": "search the public catalog for the current user request",
+      "command": "itp buyer catalog search --query \"<user request>\" --json",
+      "success_signal": "response.products contains public products and variants"
+    },
+    {
+      "intent": "buy a selected variant with the high-level cart-first flow",
+      "command": "itp buy <variant_id> --sandbox --email <buyer_email> --phone <buyer_phone> --json",
+      "success_signal": "response.status becomes waiting_human_auth, waiting_user_payment, payment_verified, or delivery_claimable"
+    }
+  ],
+  "agent_rules": [
+    "Use --json for every ItPay command.",
+    "Search and explain options before buying unless the user already named a variant.",
+    "Add the selected UCP Variant.id to cart; do not bypass cart for CORE-028 flows.",
+    "For first purchase, show auth_qr first and wait for provider login/registration consent before payment.",
+    "Show the returned payment QR exactly as provided.",
+    "Payment truth comes only from payment_intent.verified.",
+    "Secure delivery goes to the human first; report redacted delivery status only."
+  ],
+  "forbidden": [
+    "Do not call ops commands from the buyer path.",
+    "Do not call worker run-once, provider query recovery, or fixture evidence routes.",
+    "Do not ask the user to paste raw keys, claim links, claim tokens, provider payloads, or secrets.",
+    "Do not rewrite, shorten, re-encode, or invent QR URLs.",
+    "Do not treat user text like 'I paid' as payment proof."
+  ],
+  "next_docs": [
+    {
+      "condition": "Need to discover or compare services",
+      "topic": "catalog-search",
+      "command": "itp docs show catalog-search --role buyer --json"
+    },
+    {
+      "condition": "User asks which option to choose",
+      "topic": "product-recommendation",
+      "command": "itp docs show product-recommendation --role buyer --json"
+    },
+    {
+      "condition": "A variant is selected and the agent needs to create cart/checkout",
+      "topic": "cart-checkout",
+      "command": "itp docs show cart-checkout --role buyer --json"
+    },
+    {
+      "condition": "The agent is unsure what is forbidden",
+      "topic": "safety-policy",
+      "command": "itp docs show safety-policy --role buyer --json"
+    }
+  ],
+  "search_terms": ["start", "quickstart", "first time", "buyer flow", "how to use itpay", "开始", "第一次", "怎么用"]
+}

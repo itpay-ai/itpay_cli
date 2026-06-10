@@ -1,0 +1,47 @@
+{
+  "schema_version": "itp.agent_doc.v1",
+  "role": "buyer",
+  "topic": "product-recommendation",
+  "title": "Product Recommendation Rules",
+  "purpose": "Help the agent explain public product variants before checkout without overclaiming fulfillment or payment status.",
+  "when_to_use": [
+    "The user asks what to buy.",
+    "Catalog search returned multiple variants.",
+    "The user's request is fuzzy, such as low budget, premium skin, or ten draw."
+  ],
+  "required_state": {
+    "needs": ["catalog product or search result"],
+    "must_not_need": ["buyer profile values", "payment status", "raw delivery content"]
+  },
+  "commands": [
+    {
+      "intent": "refresh exact product detail before recommendation",
+      "command": "itp buyer catalog get --variant <variant_id> --json",
+      "success_signal": "response.product.variants includes current price and availability"
+    }
+  ],
+  "agent_rules": [
+    "Map user intent to the variant description and price.",
+    "For the CORE-028 PUBG sandbox pack: 20 CNY is low-cost couple skin, 40 CNY is premium skin, 288 CNY is ten-draw supply pack.",
+    "Tell the user the service is a sandbox test service when applicable.",
+    "Ask for confirmation before buying if the user's intent is ambiguous."
+  ],
+  "forbidden": [
+    "Do not promise real game delivery for a sandbox service.",
+    "Do not hide the price.",
+    "Do not choose a more expensive variant without a clear user signal."
+  ],
+  "next_docs": [
+    {
+      "condition": "User confirmed the variant",
+      "topic": "cart-checkout",
+      "command": "itp docs show cart-checkout --role buyer --json"
+    },
+    {
+      "condition": "Need to search again",
+      "topic": "catalog-search",
+      "command": "itp docs show catalog-search --role buyer --json"
+    }
+  ],
+  "search_terms": ["recommend", "compare", "which one", "variant", "option", "推荐", "怎么选", "区别"]
+}

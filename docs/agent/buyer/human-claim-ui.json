@@ -1,0 +1,42 @@
+{
+  "schema_version": "itp.agent_doc.v1",
+  "role": "buyer",
+  "topic": "human-claim-ui",
+  "title": "Human Claim UI",
+  "purpose": "Explain the human-only claim page boundary to an agent.",
+  "when_to_use": [
+    "The human received a secure delivery email.",
+    "The user asks why the agent cannot see the key.",
+    "The delivery status says claim_link_sent or check_email."
+  ],
+  "required_state": {
+    "needs": ["delivery status or human email"],
+    "must_not_need": ["claim token in agent context", "raw content in CLI output"]
+  },
+  "commands": [
+    {
+      "intent": "show agent-safe delivery status only",
+      "command": "itp buyer deliveries list --checkout <checkout_id> --json",
+      "success_signal": "response.secrets.raw_content_included == false"
+    }
+  ],
+  "agent_rules": [
+    "The human claim page is for the human buyer, not the agent.",
+    "The claim link is short-lived and single-use.",
+    "The agent may explain that ItPay intentionally separates agent operations from raw secret access.",
+    "If the human later wants the agent to install or use something, wait for an explicit human-granted install/capability flow."
+  ],
+  "forbidden": [
+    "Do not ask the human to paste the claim link or key into chat.",
+    "Do not fetch the claim page with CLI, curl, browser automation, or an agent tool.",
+    "Do not store raw content in local run files."
+  ],
+  "next_docs": [
+    {
+      "condition": "The user asks why this boundary exists",
+      "topic": "safety-policy",
+      "command": "itp docs show safety-policy --role buyer --json"
+    }
+  ],
+  "search_terms": ["claim ui", "claim page", "human", "single use", "reveal", "领取页", "人类", "查看密钥"]
+}

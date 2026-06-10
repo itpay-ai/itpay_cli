@@ -1,0 +1,68 @@
+{
+  "schema_version": "itp.agent_doc.v1",
+  "role": "buyer",
+  "topic": "cart-checkout",
+  "title": "Cart-First Checkout",
+  "purpose": "Teach the agent to use the CORE-028 UCP cart handoff instead of bypassing cart.",
+  "when_to_use": [
+    "The user selected one public catalog variant.",
+    "The agent needs an estimate before checkout.",
+    "The agent needs to create a checkout from cart_id.",
+    "A first-time wild agent may receive auth_qr before payment QR."
+  ],
+  "required_state": {
+    "needs": ["catalog_variant_id", "buyer email for secure delivery"],
+    "optional": ["buyer phone"],
+    "must_not_need": ["catalog version", "expected amount", "ops token"]
+  },
+  "commands": [
+    {
+      "intent": "create a cart estimate for the selected UCP Variant.id",
+      "command": "itp buyer cart create --variant <variant_id> --json",
+      "success_signal": "response.cart.cart_id is present and agent_next_actions includes create_checkout_from_cart"
+    },
+    {
+      "intent": "create checkout from cart_id",
+      "command": "itp buyer checkout create --cart <cart_id> --email <buyer_email> --phone <buyer_phone> --json",
+      "success_signal": "response.checkout.checkout_id is present; if response.checkout.next_required_action is auth_qr, show response.checkout.human_action and poll/resume until payment_intent_id appears"
+    },
+    {
+      "intent": "do both steps through the high-level command",
+      "command": "itp buy <variant_id> --sandbox --email <buyer_email> --phone <buyer_phone> --json",
+      "success_signal": "response.status is waiting_human_auth, waiting_user_payment, payment_verified, or delivery_claimable"
+    }
+  ],
+  "agent_rules": [
+    "CORE-028 MVP supports exactly one cart line and quantity 1.",
+    "Use cart_id as the checkout handoff.",
+    "Do not override cart line_items during checkout.",
+    "If the same cart is retried, expect the same checkout unless contact/client reference changes.",
+    "The backend revalidates catalog, price, and delivery requirements.",
+    "For first purchase, auth_qr means provider login/registration consent, not payment.",
+    "For first purchase, show the ItPay auth entry as one human orchestration entry; after provider OAuth callback the same checkout exposes payment.",
+    "After showing auth_qr, poll checkout or run buyer checkout resume until identity_status becomes identity_resolved and payment_intent_id appears."
+  ],
+  "forbidden": [
+    "Do not call legacy checkout directly for CORE-028 external-agent tests.",
+    "Do not pass a different variant in checkout after cart is created.",
+    "Do not create a second cart/checkout after a retryable timeout unless the user asks to abandon the previous one."
+  ],
+  "next_docs": [
+    {
+      "condition": "Checkout returns auth_qr",
+      "topic": "payment-qr",
+      "command": "itp docs show payment-qr --role buyer --json"
+    },
+    {
+      "condition": "Checkout has payment_intent_id and payment QR is needed",
+      "topic": "payment-qr",
+      "command": "itp docs show payment-qr --role buyer --json"
+    },
+    {
+      "condition": "Cart or checkout command fails",
+      "topic": "recovery",
+      "command": "itp docs show recovery --role buyer --json"
+    }
+  ],
+  "search_terms": ["cart", "checkout", "cart_id", "line_items", "quantity", "购物车", "下单", "结账"]
+}

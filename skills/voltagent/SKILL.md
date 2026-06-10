@@ -9,6 +9,16 @@ description: >
 
 # VoltaGent / ITPay Agent Runbook
 
+Compatibility note: for current ItPay buyer commerce tests, prefer the
+role-specific buyer skill:
+
+```bash
+itp skill show --role buyer --json
+itp docs show quickstart --role buyer --json
+```
+
+This legacy VoltaGent runbook remains for model-package setup compatibility.
+
 You are helping the user obtain and install a VoltaGent model package through
 the `itp` CLI. Follow this file as a runbook. Do not improvise payment or
 credential handling.
@@ -23,8 +33,9 @@ credential handling.
 4. Never pass passwords in command-line arguments. Use `--password-stdin`.
 5. Do not invent payment links, QR codes, checkout IDs, order IDs, or grant IDs.
 6. Do not modify, shorten, summarize, re-encode, or rewrite Alipay payment QR URLs.
-   For ItPay Core sandbox payment responses, render `qr_image_url`; do not turn
-   `payment_entry_url` into a QR code.
+   For ItPay Core sandbox payment responses, render `local_qr_path` when present,
+   then `qr_png_url` / `preferred_qr_url`, and use `qr_image_url` only as fallback.
+   Do not turn `payment_entry_url` or `mobile_wallet_url` into a QR code.
 7. Do not trust "I paid" as proof of payment.
 8. Only `itp setup --json` returning `status=grant_ready` / `status=installed`, or `itp payment wait
    <checkout_id> --json` returning `status=grant_issued` / `status=grant_installed`
@@ -37,9 +48,10 @@ credential handling.
     starting a new setup.
 12. If `status` returns a `run_id` and a `next.command`, resume that run unless
     the user explicitly asks to abandon it.
-13. Use `human_action.display` or `qr_image_url` to show Alipay auth/payment QR
-    codes in the current host. Do not ask the user to copy checkout IDs or grant
-    IDs.
+13. Use `human_action.presentation`, `local_qr_path`, or `qr_png_url` to show
+    Alipay auth/payment QR codes in the current host. If the user is on mobile,
+    present `mobile_wallet_url` as a clickable human-only fallback. Do not ask
+    the user to copy checkout IDs or grant IDs.
 14. Showing a QR code is not completion. After showing auth or payment QR, keep
     waiting by leaving `setup` running or immediately executing the returned
     `next.command` until `status=grant_ready` / `status=installed` or a
@@ -233,21 +245,24 @@ runbook. If old CLI help, README text, or shell history mentions
 literally asks for fake/mock/offline simulation. For this project, local sandbox
 testing is a real Alipay sandbox flow.
 
-For the ItPay Core sandbox buyer flow, use the buyer commands when they are
-available:
+For the current ItPay Core sandbox buyer flow, use the role-specific buyer
+skill and cart-first buyer commands:
 
 ```bash
-itp buy var_alipay_sandbox_cny1 --sandbox --email buyer@example.com --phone +8613800000000 --no-wait --json
+itp skill show --role buyer --json
+itp docs show quickstart --role buyer --json
+itp buy var_pubg_couple_skin_cny20 --sandbox --email buyer@example.com --phone +8613800000000 --no-wait --display agent --json
 itp buyer payment wait <payment_intent_id> --json
 itp buyer checkout status <checkout_id> --json
 ```
 
-The payment response contains `payment_entry_url` for browser/status fallback and
-`qr_image_url` for the human scanner. Show `qr_image_url`. If the Alipay sandbox
-app reports "order not found", refresh display only:
+The payment response contains `payment_entry_url` for browser/status fallback,
+`qr_png_url` / `preferred_qr_url` for the human scanner, and `mobile_wallet_url`
+for a human mobile fallback. Show `local_qr_path` first when the CLI provides it.
+If the Alipay sandbox app reports "order not found", refresh display only:
 
 ```bash
-itp buyer payment refresh-qr <payment_intent_id> --reason order-not-found --json
+itp buyer payment refresh-qr <payment_intent_id> --reason order-not-found --display agent --json
 ```
 
 If `/events/wait` returns `wait.timeout`, treat it as `still_waiting` for that

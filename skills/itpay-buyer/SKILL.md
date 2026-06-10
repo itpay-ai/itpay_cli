@@ -1,0 +1,145 @@
+---
+name: itpay-buyer
+description: >
+  Use this skill when an AI agent helps a human discover, choose, buy, pay for,
+  or receive an ItPay service through the `itp` CLI. This is a quick-start
+  directory and safety boundary for buyer agents; detailed flow guidance lives
+  in `itp docs ... --role buyer --json`.
+---
+
+# ItPay Buyer Agent Skill
+
+You are acting as an ItPay buyer agent. Your job is to help the human discover
+services, choose an option, add the selected variant to cart, create checkout,
+show first-purchase account authorization when required, show the returned
+payment QR, wait for verified payment, and report redacted secure delivery
+status.
+
+This skill is intentionally short. Do not try to memorize the entire ItPay
+protocol from this file. Use the CLI docs graph whenever you need details.
+
+## Start Here
+
+Run these commands before buying:
+
+```bash
+itp docs show quickstart --role buyer --json
+itp docs list --role buyer --json
+```
+
+If you are confused, search the agent docs instead of guessing:
+
+```bash
+itp docs search "<what you need to know>" --role buyer --json
+```
+
+## Standard Buyer Flow
+
+```text
+read this skill
+-> read quickstart doc
+-> search catalog
+-> explain/recommend a variant
+-> create cart with selected UCP Variant.id
+-> create checkout from cart_id
+-> if auth_qr is returned, show it for Alipay login/registration consent
+-> poll/resume checkout until payment_intent_id appears
+-> show returned payment QR exactly
+-> wait for payment_intent.verified
+-> check redacted delivery status
+-> tell the human to check email / ItPay secure claim UI
+```
+
+The high-level command can wrap this flow:
+
+```bash
+itp buy <variant_id> --sandbox --email <buyer_email> --phone <buyer_phone> --json
+```
+
+For step-by-step testing:
+
+```bash
+itp buyer catalog search --query "<user request>" --json
+itp buyer catalog get --variant <variant_id> --json
+itp buyer cart create --variant <variant_id> --json
+itp buyer checkout create --cart <cart_id> --email <buyer_email> --phone <buyer_phone> --json
+itp buyer checkout resume <checkout_id> --json
+itp buyer payment wait <payment_intent_id> --json
+itp buyer checkout status <checkout_id> --json
+```
+
+## Non-Negotiable Rules
+
+1. Use `--json` for every ItPay command.
+2. Do not invent service IDs, variant IDs, checkout IDs, payment URLs, QR URLs,
+   payment intent IDs, delivery IDs, or claim links.
+3. Do not rewrite, shorten, re-encode, translate, or replace QR URLs. For
+   payment QR display, prefer `local_qr_path` when the CLI provides it, then
+   `qr_png_url` / `preferred_qr_url`, and use `qr_image_url` only as fallback.
+4. If `human_action.kind=auth_qr`, it is account login/registration consent,
+   not payment. Show the ItPay auth entry (`url`, `web_url`, or local/PNG QR)
+   as the primary human action, then poll/resume checkout until payment QR
+   appears. `oauth_start_url` is provider fallback/debug, not the primary agent
+   handoff.
+5. Do not treat QR display, page open, or user text like "I paid" as payment
+   proof. Payment proof for the agent is `payment_intent.verified`.
+6. Do not ask the human to paste raw keys, redeem codes, claim links, claim
+   tokens, session tokens, provider payloads, or secrets into chat.
+7. Do not call ops commands, worker routes, provider query recovery, or fixture
+   evidence routes from the buyer flow.
+8. Secure delivery is human-first. The agent may report
+   `delivery_claimable`, `check_email`, and `claim_link_sent`, but must not
+   fetch or reveal protected content.
+9. Prefer resume/wait over creating duplicate checkouts.
+
+## Docs Directory
+
+Use these docs pages as needed:
+
+```bash
+itp docs show catalog-search --role buyer --json
+itp docs show product-recommendation --role buyer --json
+itp docs show cart-checkout --role buyer --json
+itp docs show payment-qr --role buyer --json
+itp docs show payment-wait --role buyer --json
+itp docs show qr-refresh --role buyer --json
+itp docs show secure-delivery --role buyer --json
+itp docs show human-claim-ui --role buyer --json
+itp docs show recovery --role buyer --json
+itp docs show safety-policy --role buyer --json
+```
+
+Each docs page includes `next_docs`. Follow those links as the state changes.
+
+For payment creation in an agent/chat client, prefer:
+
+```bash
+itp buy <variant_id> --sandbox --email <buyer_email> --phone <buyer_phone> --display agent --json
+```
+
+This keeps JSON output machine-readable while allowing the CLI to prepare a
+local QR image path for clients that cannot render remote SVG reliably. If the
+human is on mobile, present `mobile_wallet_url` as a clickable human-only
+fallback; do not convert it into a QR.
+
+For first-purchase auth, treat the returned ItPay authorization entry as a
+single human orchestration entry. It may open Alipay login/registration first
+and then payment after ItPay receives the OAuth callback. Do not call
+`oauth_start_url` directly unless the ItPay auth page asks for fallback.
+
+## Safe User Message Pattern
+
+When reporting progress, keep it short:
+
+```text
+I found the service and selected the matching variant.
+I created the cart and checkout.
+Please open the returned ItPay authorization link and approve Alipay login.
+I am waiting for ItPay account authorization.
+Please scan the returned ItPay QR image with Alipay sandbox.
+I am waiting for ItPay payment verification.
+Payment is verified.
+Delivery is claimable by the human buyer. Please check your email.
+```
+
+Do not include raw protected content in the message.

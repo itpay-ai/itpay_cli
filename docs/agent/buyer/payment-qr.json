@@ -1,0 +1,61 @@
+{
+  "schema_version": "itp.agent_doc.v1",
+  "role": "buyer",
+  "topic": "payment-qr",
+  "title": "Payment QR Display",
+  "purpose": "Teach the agent how to present the returned payment QR without corrupting or replacing it.",
+  "when_to_use": [
+    "Checkout returns human_action.kind=auth_qr for first-purchase provider authorization.",
+    "PaymentIntent has been created.",
+    "The CLI returned human_action.kind=payment_qr, qr_png_url, preferred_qr_url, or qr_image_url.",
+    "The human needs to scan with Alipay sandbox."
+  ],
+  "required_state": {
+    "needs": ["payment_intent_id", "human_action", "qr_png_url/preferred_qr_url or local_qr_path"],
+    "must_not_need": ["raw provider QR", "provider sign", "ops token"]
+  },
+  "commands": [
+    {
+      "intent": "create payment intent through the high-level buy flow",
+      "command": "itp buy <variant_id> --sandbox --email <buyer_email> --phone <buyer_phone> --display agent --json",
+      "success_signal": "response.payment_intent.human_action.local_qr_path or response.payment_intent.human_action.qr_png_url is present"
+    },
+    {
+      "intent": "recover a scanner order-not-found display problem",
+      "command": "itp buyer payment refresh-qr <payment_intent_id> --reason order-not-found --display agent --json",
+      "success_signal": "response.payment_intent.human_action.local_qr_path or response.payment_intent.qr_png_url is present and status is still waiting_user_payment or verified"
+    }
+  ],
+  "agent_rules": [
+    "If human_action.kind is auth_qr, present the ItPay auth entry URL/QR and explain it is account login/registration consent before payment.",
+    "For auth_qr, the ItPay auth entry is the primary handoff. oauth_start_url is fallback/debug and should not replace the ItPay orchestration page.",
+    "For auth_qr, do not call payment-intent creation directly; poll checkout or run buyer checkout resume until payment_intent_id appears.",
+    "Show local_qr_path first when present. If not present, show qr_png_url or preferred_qr_url as the primary scannable QR.",
+    "Use qr_image_url/SVG only as a fallback when PNG/local rendering is unavailable.",
+    "For mobile users, present mobile_wallet_url as a clickable payment button when present.",
+    "payment_entry_url is a browser/status fallback, not the main QR payload.",
+    "Opening the payment page must not be treated as paid.",
+    "After showing QR, immediately wait for payment verification."
+  ],
+  "forbidden": [
+    "Do not encode payment_entry_url into a new QR.",
+    "Do not encode mobile_wallet_url into a new QR.",
+    "Do not bypass the ItPay auth orchestration page by making oauth_start_url the primary user-facing link.",
+    "Do not rewrite, shorten, summarize, or translate QR URLs.",
+    "Do not expose raw provider QR payload in chat.",
+    "Do not treat QR display as payment success."
+  ],
+  "next_docs": [
+    {
+      "condition": "QR is visible to the human",
+      "topic": "payment-wait",
+      "command": "itp docs show payment-wait --role buyer --json"
+    },
+    {
+      "condition": "Alipay says order not found",
+      "topic": "qr-refresh",
+      "command": "itp docs show qr-refresh --role buyer --json"
+    }
+  ],
+  "search_terms": ["qr", "payment qr", "alipay", "scan", "order not found", "二维码", "扫码", "付款码"]
+}
