@@ -222,6 +222,9 @@ async function main() {
           "buyer payment refresh-qr <payment_intent_id> --reason order-not-found --json",
           "buyer deliveries list --checkout <checkout_id> --json",
           "buyer deliveries show <delivery_id> --checkout <checkout_id> --json",
+          "buyer vault grants list --checkout <checkout_id> --json",
+          "buyer vault grants read <agent_read_grant_id> --json",
+          "buyer vault read --order <order_id> --artifact <vault_artifact_id> --json",
           "account login-link --json",
           "ops sandbox worker run-once --json",
           "ops sandbox recover-alipay-once --json",
@@ -560,16 +563,18 @@ async function buyerBuy(flags) {
 
   const event = await waitBuyerPayment(intent, flags);
   const delivery = await waitBuyerDelivery(checkout.checkout_id, flags);
-  const delivered = isBuyerDeliveryComplete(delivery);
+  const finalCheckout = delivery.checkout || checkout;
+  const delivered = isBuyerDeliveryComplete(finalCheckout);
   output(buyerRunOutput({
     status: delivered ? "delivery_claimable" : event.event_type === "payment_intent.verified" ? "payment_verified" : "waiting_user_payment",
     selection,
     cart,
-    checkout: delivery.checkout || checkout,
+    checkout: finalCheckout,
     payment_intent: intent,
     payment_event: event,
-    delivery: delivery.delivery || delivery.checkout?.delivery || checkout.delivery || null,
-    agent_next_actions: delivery.checkout?.agent_next_actions || event.agent_next_actions || intent.agent_next_actions || ["poll_checkout"],
+    delivery: delivery.delivery || finalCheckout.delivery || null,
+    agent_next_actions: delivered ? deliveryAwareAgentNextActions(finalCheckout) : (finalCheckout.agent_next_actions || event.agent_next_actions || intent.agent_next_actions || ["poll_checkout"]),
+    optional_agent_read_grant: optionalAgentReadGrantHint(finalCheckout.checkout_id || checkout.checkout_id, finalCheckout),
     next: delivered
       ? { type: "human_check_email", safe_for_agent: true }
       : { command: cliCommand("buyer", "checkout", "status", checkout.checkout_id, "--json"), safe_for_agent: true }
@@ -743,7 +748,13 @@ async function buyer(command, rest, flags) {
       if (!checkoutID) throw new Error("checkout_id is required");
       const checkout = await getBuyerCheckout(checkoutID, flags);
       await maybeClaimBuyerSessionForCheckout(checkout, flags);
-      output(buyerRunOutput({ status: checkout.delivery_status || checkout.status, checkout, delivery: checkout.delivery, agent_next_actions: checkout.agent_next_actions }));
+      output(buyerRunOutput({
+        status: checkout.delivery_status || checkout.status,
+        checkout,
+        delivery: checkout.delivery,
+        agent_next_actions: deliveryAwareAgentNextActions(checkout),
+        optional_agent_read_grant: optionalAgentReadGrantHint(checkout.checkout_id, checkout)
+      }));
       return;
     }
     if (subcommand === "resume") {
@@ -795,7 +806,13 @@ async function buyer(command, rest, flags) {
         output(buyerRunOutput({ status: "waiting_user_payment", checkout, payment_intent: intent, agent_next_actions: intent.agent_next_actions || ["wait_payment"] }));
         return;
       }
-      output(buyerRunOutput({ status: checkout.delivery_status || checkout.status, checkout, delivery: checkout.delivery, agent_next_actions: checkout.agent_next_actions }));
+      output(buyerRunOutput({
+        status: checkout.delivery_status || checkout.status,
+        checkout,
+        delivery: checkout.delivery,
+        agent_next_actions: deliveryAwareAgentNextActions(checkout),
+        optional_agent_read_grant: optionalAgentReadGrantHint(checkout.checkout_id, checkout)
+      }));
       return;
     }
   }
@@ -842,9 +859,44 @@ async function buyer(command, rest, flags) {
         delivery_id: positional(rest, 1) || flags.delivery || flags.delivery_id || null,
         checkout_id: checkout.checkout_id,
         delivery: checkout.delivery || null,
-        agent_next_actions: checkout.agent_next_actions || ["stop_check_email"],
+        agent_next_actions: deliveryAwareAgentNextActions(checkout),
+        optional_agent_read_grant: optionalAgentReadGrantHint(checkout.checkout_id, checkout),
         secrets: { raw_content_included: false, claim_token_included: false }
       });
+      return;
+    }
+  }
+  if (command === "vault") {
+    if (subcommand === "grants") {
+      const action = rest[1] && !String(rest[1]).startsWith("--") ? rest[1] : "list";
+      if (action === "list") {
+        const grants = await listBuyerAgentReadGrants(flags);
+        output(buyerRunOutput({
+          status: "agent_read_grants",
+          ...grants,
+          agent_next_actions: grants.agent_readable_grants?.length ? ["read_agent_grant_view"] : ["wait_for_human_agent_read_grant"]
+        }));
+        return;
+      }
+      if (action === "read" || action === "show") {
+        const grantID = flags.grant || flags.grant_id || flags.agent_read_grant_id || positional(rest, 2);
+        if (!grantID) throw new Error("agent_read_grant_id is required");
+        const view = await readBuyerAgentReadGrant(grantID, flags);
+        output(buyerRunOutput({
+          status: "agent_read_grant_view",
+          grant: view,
+          agent_next_actions: ["use_human_approved_fields_only"]
+        }));
+        return;
+      }
+    }
+    if (subcommand === "read") {
+      const view = await readBuyerVaultArtifactGrant(flags);
+      output(buyerRunOutput({
+        status: "agent_read_grant_view",
+        grant: view,
+        agent_next_actions: ["use_human_approved_fields_only"]
+      }));
       return;
     }
   }
@@ -853,13 +905,7 @@ async function buyer(command, rest, flags) {
     return;
   }
   if (command === "auth" && subcommand === "status") {
-    output({
-      schema_version: "itp.buyer.v1",
-      status: "public_purchase_mode",
-      authenticated: false,
-      auth_required_for_discovery: false,
-      note: "CORE-027 buyer CLI does not expose profile values; first-purchase identity is handled by human QR in later slices."
-    });
+    output(await buyerAuthStatusOutput(flags));
     return;
   }
   throw new Error(`unknown buyer command: ${[command, subcommand].filter(Boolean).join(" ") || ""}`);
@@ -1504,6 +1550,10 @@ function buyerDocsFor(value = {}) {
   if (status.includes("delivery") || value.delivery || actions.includes("stop_check_email")) {
     topics.add("secure-delivery");
     topics.add("human-claim-ui");
+    topics.add("vault-agent-read");
+  }
+  if (status.includes("agent_read_grant") || value.agent_readable_grants || value.grant || actions.includes("read_agent_grant_view") || actions.includes("list_agent_read_grants")) {
+    topics.add("vault-agent-read");
   }
   if (topics.size === 0) topics.add("quickstart");
   return Array.from(topics).map((topic) => buyerDocRef(topic));
@@ -1518,19 +1568,122 @@ function buyerDocRef(topic) {
 
 function buyerDeliveryListOutput(checkout) {
   const delivery = checkout.delivery || null;
+  const checkoutID = checkout.checkout_id;
   return buyerRunOutput({
     status: delivery?.status || checkout.delivery_status,
-    checkout_id: checkout.checkout_id,
+    checkout_id: checkoutID,
     deliveries: delivery ? [{
-      checkout_id: checkout.checkout_id,
+      checkout_id: checkoutID,
       status: delivery.status,
       next_required_action: delivery.next_required_action,
       channels: delivery.channels || [],
       artifact_status: delivery.artifact_status,
       sensitive_content_redacted: delivery.sensitive_content_redacted !== false
     }] : [],
-    agent_next_actions: checkout.agent_next_actions || []
+    agent_next_actions: deliveryAwareAgentNextActions(checkout),
+    optional_agent_read_grant: optionalAgentReadGrantHint(checkoutID, checkout)
   });
+}
+
+function deliveryAwareAgentNextActions(checkout = {}) {
+  const actions = Array.isArray(checkout.agent_next_actions) ? [...checkout.agent_next_actions] : [];
+  if (isBuyerDeliveryComplete(checkout) && !actions.includes("optionally_request_agent_read_grant")) {
+    actions.push("optionally_request_agent_read_grant");
+  }
+  return actions;
+}
+
+function optionalAgentReadGrantHint(checkoutID, checkout = {}) {
+  if (!checkoutID || !isBuyerDeliveryComplete(checkout)) return undefined;
+  return {
+    type: "optional_human_passkey_agent_read_grant",
+    safe_for_agent: true,
+    requires_human: true,
+    instruction: "If the human wants you to analyze or use the delivered result, ask them to open the ItPay claim/account page, reveal with Passkey, choose 'Give to Agent / 一键给 Agent', select fields, and confirm. After they approve, do not ask for a grant id; run the probe command.",
+    docs_command: cliCommand("docs", "show", "vault-agent-read", "--role", "buyer", "--json"),
+    probe_command: cliCommand("buyer", "vault", "grants", "list", "--checkout", checkoutID, "--json"),
+    read_pattern: cliCommand("buyer", "vault", "read", "--order", "<order_id>", "--artifact", "<vault_artifact_id>", "--json")
+  };
+}
+
+async function buyerAuthStatusOutput(flags = {}) {
+  const config = readConfig();
+  const credentials = readCredentials();
+  const token = readSessionToken(credentials);
+  if (token && config.account_id) {
+    try {
+      const status = await coreApi(`/v1/buyer/accounts/${encodeURIComponent(config.account_id)}/auth/status`, { method: "GET" }, flags);
+      return buyerRunOutput({
+        status: "authenticated_buyer_session",
+        authenticated: true,
+        buyer_account_id: status.buyer_account_id || config.account_id,
+        agent_device_id: config.device_id || null,
+        account_status: status.account_status,
+        sensitive_redacted: true,
+        agent_next_actions: ["search_catalog", "view_orders", "list_agent_read_grants"]
+      });
+    } catch (error) {
+      return buyerRunOutput({
+        status: "buyer_session_invalid",
+        authenticated: false,
+        buyer_account_id: config.account_id || null,
+        agent_device_id: config.device_id || null,
+        error: safeErrorMessage(error),
+        agent_next_actions: ["create_checkout_for_human_auth"]
+      });
+    }
+  }
+  return buyerRunOutput({
+    status: "public_purchase_mode",
+    authenticated: false,
+    auth_required_for_discovery: false,
+    agent_next_actions: ["search_catalog", "create_checkout_for_human_auth"],
+    note: "Catalog discovery is public. Checkout creates a human auth-to-payment QR and saves a buyer session after the human authorizes."
+  });
+}
+
+async function listBuyerAgentReadGrants(flags = {}) {
+  const params = new URLSearchParams();
+  const mappings = [
+    ["checkout", "checkout_id"],
+    ["checkout_id", "checkout_id"],
+    ["order", "order_id"],
+    ["order_id", "order_id"],
+    ["artifact", "vault_artifact_id"],
+    ["vault_artifact", "vault_artifact_id"],
+    ["vault_artifact_id", "vault_artifact_id"],
+    ["line", "order_line_item_id"],
+    ["line_id", "order_line_item_id"],
+    ["order_line_item_id", "order_line_item_id"]
+  ];
+  for (const [flagName, paramName] of mappings) {
+    if (flags[flagName] !== undefined && flags[flagName] !== null && flags[flagName] !== false) {
+      params.set(paramName, String(flags[flagName]));
+    }
+  }
+  const query = params.toString();
+  return await coreApi(`/v1/vault/agent-read-grants${query ? `?${query}` : ""}`, { method: "GET" }, flags);
+}
+
+async function readBuyerAgentReadGrant(grantID, flags = {}) {
+  if (!grantID) throw new Error("agent_read_grant_id is required");
+  return await coreApi(`/v1/vault/agent-read-grants/${encodeURIComponent(grantID)}/view`, { method: "GET" }, flags);
+}
+
+async function readBuyerVaultArtifactGrant(flags = {}) {
+  const grants = await listBuyerAgentReadGrants(flags);
+  const list = Array.isArray(grants.agent_readable_grants) ? grants.agent_readable_grants : [];
+  if (!list.length) {
+    throw new Error("no active agent-readable grant found; ask the human to open the account portal and confirm one-key agent authorization with Passkey");
+  }
+  const grant = list[0];
+  const grantID = grant.agent_read_grant_id || grant.agent_readGrantID;
+  if (!grantID) throw new Error("active grant did not include agent_read_grant_id");
+  const view = await readBuyerAgentReadGrant(grantID, flags);
+  return {
+    ...view,
+    discovered_grant: grant
+  };
 }
 
 async function agentStatus(flags) {
@@ -2522,6 +2675,7 @@ function docTopicOrder(topic) {
     "secure-delivery",
     "human-claim-ui",
     "account-portal",
+    "vault-agent-read",
     "recovery",
     "safety-policy"
   ];

@@ -18,12 +18,19 @@
       "intent": "show agent-safe delivery status only",
       "command": "itp buyer deliveries list --checkout <checkout_id> --json",
       "success_signal": "response.secrets.raw_content_included == false"
+    },
+    {
+      "intent": "check whether the human has granted this agent a scoped view",
+      "command": "itp buyer vault grants list --checkout <checkout_id> --json",
+      "success_signal": "count > 0 means the human approved agent-readable access for this exact agent device"
     }
   ],
   "agent_rules": [
     "The human claim page is for the human buyer, not the agent.",
     "The claim link is short-lived and single-use.",
     "The agent may explain that ItPay intentionally separates agent operations from raw secret access.",
+    "If the human wants the agent to analyze or use the delivered result, ask them to click 'Give to Agent / 一键给 Agent' in the ItPay page and confirm with Passkey.",
+    "After the human grants access, the agent should discover the grant with `itp buyer vault grants list ...`; do not ask the human to paste the grant id.",
     "If the human later wants the agent to install or use something, wait for an explicit human-granted install/capability flow."
   ],
   "forbidden": [
@@ -36,6 +43,11 @@
       "condition": "The human wants to view their account or other orders later",
       "topic": "account-portal",
       "command": "itp docs show account-portal --role buyer --json"
+    },
+    {
+      "condition": "The human approved agent-readable fields",
+      "topic": "vault-agent-read",
+      "command": "itp docs show vault-agent-read --role buyer --json"
     },
     {
       "condition": "The user asks why this boundary exists",

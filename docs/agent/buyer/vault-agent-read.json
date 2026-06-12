@@ -1,0 +1,69 @@
+{
+  "schema_version": "itp.agent_doc.v1",
+  "role": "buyer",
+  "topic": "vault-agent-read",
+  "title": "Human-Approved Vault Agent Read",
+  "purpose": "Teach the agent how to read only the artifact fields that the human explicitly approved with Passkey.",
+  "when_to_use": [
+    "The human opened the ItPay account portal and selected one-key agent authorization.",
+    "The user asks whether the agent can now see a purchased report or selected fields.",
+    "A checkout/order has delivered a vault artifact and the human granted agent-readable access."
+  ],
+  "required_state": {
+    "needs": ["authenticated buyer account session", "current agent device binding", "order_id or checkout_id or vault_artifact_id"],
+    "must_not_need": ["human portal token", "claim token", "passkey credential", "raw protected payload", "grant id copied by the human"]
+  },
+  "commands": [
+    {
+      "intent": "check whether this agent has active human-approved grants for a checkout",
+      "command": "itp buyer vault grants list --checkout <checkout_id> --json",
+      "success_signal": "response.agent_readable_grants is an array; count > 0 means the human has granted this exact agent access"
+    },
+    {
+      "intent": "check whether this agent has active human-approved grants for one order or artifact",
+      "command": "itp buyer vault grants list --order <order_id> --artifact <vault_artifact_id> --json",
+      "success_signal": "only grants scoped to this logged-in agent device are returned"
+    },
+    {
+      "intent": "read a discovered grant view",
+      "command": "itp buyer vault grants read <agent_read_grant_id> --json",
+      "success_signal": "response.grant contains selected_fields, structured_view, or summary according to the human-approved scope"
+    },
+    {
+      "intent": "convenience read by order/artifact without asking the human for grant id",
+      "command": "itp buyer vault read --order <order_id> --artifact <vault_artifact_id> --json",
+      "success_signal": "the CLI discovers the active grant and reads its scoped view"
+    }
+  ],
+  "agent_rules": [
+    "Only read through `buyer vault` commands after the human has explicitly approved the agent grant in the ItPay portal.",
+    "Do not ask the human to copy or paste `agent_read_grant_id`; discover it with `buyer vault grants list`.",
+    "If no grant is returned, tell the human to open their ItPay account portal, reveal with Passkey, choose fields, and confirm one-key agent authorization.",
+    "Use only fields returned in the grant view. Do not infer that unreturned fields are accessible.",
+    "If the command returns 401 or buyer_session_invalid, run `itp buyer auth status --json` and ask the human to reauthorize through a normal checkout/account flow."
+  ],
+  "forbidden": [
+    "Do not open, scrape, or screenshot the human portal to obtain protected content.",
+    "Do not request passkey credentials, portal tokens, claim links, claim tokens, storage refs, provider AppCode, provider keys, or raw payloads.",
+    "Do not use another agent's grant id. Grants are scoped to the exact buyer account session and agent device.",
+    "Do not cache selected fields beyond the task context unless the user explicitly asks you to create a local artifact."
+  ],
+  "next_docs": [
+    {
+      "condition": "The human needs a portal link to grant access",
+      "topic": "account-portal",
+      "command": "itp docs show account-portal --role buyer --json"
+    },
+    {
+      "condition": "The order was delivered but no grant exists",
+      "topic": "secure-delivery",
+      "command": "itp docs show secure-delivery --role buyer --json"
+    },
+    {
+      "condition": "The agent is unsure what it may read",
+      "topic": "safety-policy",
+      "command": "itp docs show safety-policy --role buyer --json"
+    }
+  ],
+  "search_terms": ["vault", "agent read", "passkey grant", "one key agent", "授权给 agent", "可读授权", "字段授权", "查看报告"]
+}

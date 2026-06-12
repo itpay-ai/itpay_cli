@@ -49,6 +49,7 @@ read this skill
 -> wait for payment_intent.verified
 -> check redacted delivery status
 -> tell the human to check email / ItPay secure claim UI
+-> if the human grants agent-readable access with Passkey, discover and read only the approved vault fields
 ```
 
 The high-level command can wrap this flow:
@@ -72,6 +73,8 @@ itp buyer checkout create --cart <cart_id> --email <buyer_email> --phone <buyer_
 itp buyer checkout resume <checkout_id> --json
 itp buyer payment wait <payment_intent_id> --json
 itp buyer checkout status <checkout_id> --json
+itp buyer vault grants list --checkout <checkout_id> --json
+itp buyer vault read --order <order_id> --artifact <vault_artifact_id> --json
 ```
 
 For API products, read the product metadata input schema before cart creation.
@@ -122,8 +125,17 @@ registered name or run fuzzy search first.
 10. Secure delivery is human-first. The agent may report
    `delivery_claimable`, `check_email`, and `claim_link_sent`, but must not
    fetch or reveal protected content.
-11. Prefer resume/wait over creating duplicate checkouts.
-12. Do not create a cart for an API service until all required service input
+11. If the human uses Passkey to authorize agent-readable vault access, do not
+    ask them to paste content, portal text, claim links, or grant IDs. Run
+    `itp buyer vault grants list ...` and then `itp buyer vault read ...`.
+    Use only the fields returned by that command.
+12. If the user asks you to analyze, compare, summarize, install, or otherwise
+    use a delivered result, you may ask them to open the ItPay claim/account
+    page, click "Give to Agent / 一键给 Agent", choose fields, and confirm with
+    Passkey. After they approve, probe with `itp buyer vault grants list ...`;
+    do not ask them to copy a grant id.
+13. Prefer resume/wait over creating duplicate checkouts.
+14. Do not create a cart for an API service until all required service input
     fields are known. For enterprise fuzzy search, `company_name` can be a
     broad keyword. For enterprise precise lookup, `company_name_or_credit_no`
     must be exact; otherwise warn the user that the query may waste the paid
@@ -143,6 +155,7 @@ itp docs show qr-refresh --role buyer --json
 itp docs show secure-delivery --role buyer --json
 itp docs show human-claim-ui --role buyer --json
 itp docs show account-portal --role buyer --json
+itp docs show vault-agent-read --role buyer --json
 itp docs show recovery --role buyer --json
 itp docs show safety-policy --role buyer --json
 ```
