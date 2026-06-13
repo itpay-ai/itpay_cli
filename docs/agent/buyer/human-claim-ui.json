@@ -30,12 +30,13 @@
     "The claim link is short-lived and single-use.",
     "The agent may explain that ItPay intentionally separates agent operations from raw secret access.",
     "If the human wants the agent to analyze or use the delivered result, ask them to click 'Give to Agent / 一键给 Agent' in the ItPay page and confirm with Passkey.",
-    "After the human grants access, the agent should discover the grant with `itp buyer vault grants list ...`; do not ask the human to paste the grant id.",
+    "After the human grants access, the agent should discover the grant with `itp buyer vault grants list --checkout <checkout_id> --json`; do not ask the human to paste the grant id. The CLI restores the buyer agent session from the checkout auth handoff when possible.",
     "If the human later wants the agent to install or use something, wait for an explicit human-granted install/capability flow."
   ],
   "forbidden": [
     "Do not ask the human to paste the claim link or key into chat.",
     "Do not fetch the claim page with CLI, curl, browser automation, or an agent tool.",
+    "Do not ask the human for auth session IDs, display tokens, buyer session tokens, or portal tokens.",
     "Do not store raw content in local run files."
   ],
   "next_docs": [

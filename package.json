@@ -1,12 +1,12 @@
 {
-  "name": "itpay_cli",
-  "version": "0.1.2",
+  "name": "@itpay/cli",
+  "version": "0.1.1",
   "description": "ItPay CLI, buyer skill, and agent-readable docs for agent-native commerce.",
   "type": "module",
   "bin": {
-    "itp": "./bin/itp",
-    "itpay": "./bin/itp",
-    "itpay_cli": "./bin/itp"
+    "itp": "bin/itp",
+    "itpay": "bin/itp",
+    "itpay_cli": "bin/itp"
   },
   "files": [
     "bin/",
@@ -14,18 +14,18 @@
     "docs/",
     "install.sh",
     "install.ps1",
-    "smoke.sh",
-    "e2e-local.sh",
     "README.md",
     "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "smoke": "sh ./smoke.sh",
     "check": "node --check ./bin/itp && sh ./smoke.sh"
   },
   "keywords": [
     "itpay",
-    "voltagent",
     "agent",
     "cli",
     "claude-code",

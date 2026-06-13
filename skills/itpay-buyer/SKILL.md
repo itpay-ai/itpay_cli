@@ -126,9 +126,11 @@ registered name or run fuzzy search first.
    `delivery_claimable`, `check_email`, and `claim_link_sent`, but must not
    fetch or reveal protected content.
 11. If the human uses Passkey to authorize agent-readable vault access, do not
-    ask them to paste content, portal text, claim links, or grant IDs. Run
+    ask them to paste content, portal text, claim links, session tokens, auth
+    session IDs, display tokens, or grant IDs. Run
     `itp buyer vault grants list ...` and then `itp buyer vault read ...`.
-    Use only the fields returned by that command.
+    The CLI automatically restores the buyer agent session from the checkout
+    auth handoff when possible. Use only the fields returned by that command.
 12. If the user asks you to analyze, compare, summarize, install, or otherwise
     use a delivered result, you may ask them to open the ItPay claim/account
     page, click "Give to Agent / 一键给 Agent", choose fields, and confirm with
@@ -140,6 +142,10 @@ registered name or run fuzzy search first.
     broad keyword. For enterprise precise lookup, `company_name_or_credit_no`
     must be exact; otherwise warn the user that the query may waste the paid
     lookup.
+15. Do not operate ItPay by opening the human web UI yourself. Use the CLI for
+    catalog, cart, checkout, payment wait, delivery status, grant discovery,
+    and vault reads. Browser/UI pages are for the human to scan, pay, claim,
+    reveal, and approve.
 
 ## Docs Directory
 

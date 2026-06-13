@@ -2,12 +2,12 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-API_BASE=${VOLTAGENT_API_BASE:-http://localhost:3000}
+API_BASE=${ITPAY_API_BASE:-http://localhost:3000}
 NODE=${NODE:-$(command -v node)}
 
-TMP_HOME=$(mktemp -d "${TMPDIR:-/tmp}/voltagent-itp-e2e-home.XXXXXX")
-TMP_SETUP_HOME=$(mktemp -d "${TMPDIR:-/tmp}/voltagent-itp-setup-home.XXXXXX")
-TMP_SETUP_NOWAIT_HOME=$(mktemp -d "${TMPDIR:-/tmp}/voltagent-itp-setup-nowait-home.XXXXXX")
+TMP_HOME=$(mktemp -d "${TMPDIR:-/tmp}/itpay-itp-e2e-home.XXXXXX")
+TMP_SETUP_HOME=$(mktemp -d "${TMPDIR:-/tmp}/itpay-itp-setup-home.XXXXXX")
+TMP_SETUP_NOWAIT_HOME=$(mktemp -d "${TMPDIR:-/tmp}/itpay-itp-setup-nowait-home.XXXXXX")
 
 cleanup() {
   rm -rf "$TMP_HOME" "$TMP_SETUP_HOME" "$TMP_SETUP_NOWAIT_HOME"
@@ -20,7 +20,7 @@ itp_home() {
   attempt=0
   while :; do
     err_file="$itp_home_dir/itp-error.log"
-    if out=$(HOME="$itp_home_dir" PATH=/nonexistent VOLTAGENT_API_BASE="$API_BASE" "$NODE" "$ROOT/bin/itp" "$@" 2>"$err_file"); then
+    if out=$(HOME="$itp_home_dir" PATH=/nonexistent ITPAY_API_BASE="$API_BASE" "$NODE" "$ROOT/bin/itp" "$@" 2>"$err_file"); then
       printf '%s' "$out"
       return 0
     fi
@@ -56,7 +56,7 @@ printf 'running one-command setup flow\n' >&2
 SETUP=$(itp_home "$TMP_SETUP_HOME" setup --credits 100 --method fake --mock-approve --allow-fake --offline --json)
 printf '%s' "$SETUP" | json_assert "return v.status === 'grant_ready' && v.target === 'generic' && v.grant_id && v.base_url && v.openai_base_url && v.credential && v.credential.stored === true && v.auth && v.auth.session_stored === true && v.runtime_install.status === 'skipped'"
 test ! -f "$TMP_SETUP_HOME/.codex/config.toml"
-TOKEN_FROM_SETUP=$(HOME="$TMP_SETUP_HOME" PATH=/nonexistent VOLTAGENT_API_BASE="$API_BASE" "$NODE" "$ROOT/bin/itp" token issue --grant "$(printf '%s' "$SETUP" | json_get grant_id)" --stdout)
+TOKEN_FROM_SETUP=$(HOME="$TMP_SETUP_HOME" PATH=/nonexistent ITPAY_API_BASE="$API_BASE" "$NODE" "$ROOT/bin/itp" token issue --grant "$(printf '%s' "$SETUP" | json_get grant_id)" --stdout)
 case "$TOKEN_FROM_SETUP" in
   sk-*) ;;
   *) echo "setup token issue did not return sk-* token" >&2; exit 1 ;;
@@ -100,7 +100,7 @@ printf '%s' "$INSTALL" | json_assert "return v.grant_id && v.credential && v.cre
 printf 'installing codex profile in temp HOME\n' >&2
 itp install codex --grant "$GRANT_ID" --offline --no-test --json | json_assert "return v.target === 'codex' && v.grant_id"
 test -f "$TMP_HOME/.codex/config.toml"
-test -f "$TMP_HOME/.itp/voltagent.env"
+test -f "$TMP_HOME/.itp/itpay.env"
 
 BALANCE=$(itp balance --json)
 printf '%s' "$BALANCE" | json_assert "return v.active_grants === 1 && v.credits_remaining === '100.000000'"
@@ -126,7 +126,7 @@ printf '%s' "$REVOKE" | json_assert "return v.status === 'revoked'"
 BALANCE=$(itp balance --json)
 printf '%s' "$BALANCE" | json_assert "return v.active_grants === 0"
 
-printf 'voltagent local e2e ok\n'
+printf 'itpay local e2e ok\n'
 printf 'server: %s\n' "$API_BASE"
 printf 'account: %s\n' "$(printf '%s' "$AUTH" | json_get account_id)"
 printf 'checkout: %s\n' "$CHECKOUT_ID"

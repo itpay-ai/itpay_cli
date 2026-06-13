@@ -2,8 +2,8 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-TMP_HOME=$(mktemp -d "${TMPDIR:-/tmp}/voltagent-itp-home.XXXXXX")
-TMP_PREFIX=$(mktemp -d "${TMPDIR:-/tmp}/voltagent-itp-prefix.XXXXXX")
+TMP_HOME=$(mktemp -d "${TMPDIR:-/tmp}/itpay-itp-home.XXXXXX")
+TMP_PREFIX=$(mktemp -d "${TMPDIR:-/tmp}/itpay-itp-prefix.XXXXXX")
 MOCK_SERVER_PID=""
 
 cleanup() {
@@ -34,7 +34,7 @@ cat >"$TMP_HOME/.itp/credentials.json" <<'JSON'
     "grant_id": "gr_missing_key",
     "target": "codex",
     "credential_store": "macos-keychain",
-    "credential_ref": "voltagent:gr_missing_key",
+    "credential_ref": "itpay:gr_missing_key",
     "base_url": "http://localhost:3000",
     "openai_base_url": "http://localhost:3000/openai/v1",
     "anthropic_base_url": "http://localhost:3000/anthropic/v1",
@@ -53,14 +53,12 @@ test -f "$SKILL_PATH"
 HOME="$TMP_HOME" "$ROOT/bin/itp" skill show --role buyer | grep -q "ItPay Buyer Agent Skill"
 SKILL_JSON=$(HOME="$TMP_HOME" "$ROOT/bin/itp" skill show --role buyer --json)
 printf '%s' "$SKILL_JSON" | node -e 'let data="";process.stdin.on("data",c=>data+=c);process.stdin.on("end",()=>{const json=JSON.parse(data); if (json.skill !== "itpay-buyer" || json.role !== "buyer" || !json.path || !json.content.includes("Non-Negotiable Rules")) process.exit(1);})'
-LEGACY_SKILL_JSON=$(HOME="$TMP_HOME" "$ROOT/bin/itp" skill show --role voltagent --json)
-printf '%s' "$LEGACY_SKILL_JSON" | node -e 'let data="";process.stdin.on("data",c=>data+=c);process.stdin.on("end",()=>{const json=JSON.parse(data); if (json.skill !== "voltagent" || !json.content.includes("VoltaGent / ITPay Agent Runbook")) process.exit(1);})'
 INSTALLED_SKILL_PATH=$(HOME="$TMP_HOME" "$TMP_PREFIX/bin/itp" skill path --role buyer)
 test -f "$INSTALLED_SKILL_PATH"
 HOME="$TMP_HOME" "$TMP_PREFIX/bin/itp" skill show --role buyer | grep -q "ItPay Buyer Agent Skill"
 HOME="$TMP_HOME" "$ROOT/bin/itp" --help >/dev/null
 HELP=$(HOME="$TMP_HOME" "$ROOT/bin/itp" --help)
-printf '%s' "$HELP" | node -e 'let data="";process.stdin.on("data",c=>data+=c);process.stdin.on("end",()=>{const json=JSON.parse(data); if (!json.commands.includes("keys rotate --grant <grant_id>") || !json.commands.includes("checkout create --plan credit-300 --method alipay --idempotency-key <uuid>") || !json.commands.includes("checkout list --limit 20") || !json.commands.includes("setup --credits 100 --method alipay") || !json.commands.includes("setup --credits 100 --target codex --method alipay --install-runtime") || !json.commands.includes("status --json") || !json.commands.includes("resume --json") || !json.commands.includes("skill show")) process.exit(1);})'
+printf '%s' "$HELP" | node -e 'let data="";process.stdin.on("data",c=>data+=c);process.stdin.on("end",()=>{const json=JSON.parse(data); if (json.commands.some((command)=>command.startsWith("setup ") || command.startsWith("grants ") || command.startsWith("token ") || command.startsWith("keys "))) process.exit(1); if (!json.commands.includes("status --json") || !json.commands.includes("resume --json") || !json.commands.includes("skill show") || !json.commands.includes("buyer catalog search --query 企业工商 --category business_data_api --provider itpay_enterprise_data --json") || !json.commands.includes("buyer vault grants list --checkout <checkout_id> --json")) process.exit(1);})'
 printf '%s' "$HELP" | node -e 'let data="";process.stdin.on("data",c=>data+=c);process.stdin.on("end",()=>{const json=JSON.parse(data); for (const command of ["buy var_pubg_couple_skin_cny20 --sandbox --email buyer@example.com --phone +8613800000000 --json","buyer cart create --variant var_pubg_couple_skin_cny20 --json","buyer checkout create --cart <cart_id> --method alipay --email buyer@example.com --phone +8613800000000 --json","buyer payment wait <payment_intent_id> --json","buyer payment refresh-qr <payment_intent_id> --reason order-not-found --json","buyer deliveries list --checkout <checkout_id> --json","buyer vault grants list --checkout <checkout_id> --json","buyer vault grants read <agent_read_grant_id> --json","buyer vault read --order <order_id> --artifact <vault_artifact_id> --json","docs show quickstart --role buyer --json","ops sandbox worker run-once --json"]) { if (!json.commands.includes(command)) process.exit(1); }})'
 DOCS_LIST=$(HOME="$TMP_HOME" "$ROOT/bin/itp" docs list --role buyer --json)
 printf '%s' "$DOCS_LIST" | node -e 'let data="";process.stdin.on("data",c=>data+=c);process.stdin.on("end",()=>{const json=JSON.parse(data); if (json.schema_version !== "itp.agent_doc_index.v1" || !json.topics.some((topic)=>topic.topic==="cart-checkout")) process.exit(1);})'
@@ -220,6 +218,22 @@ const checkout = {
   agent_next_actions: ["create_payment_intent"]
 };
 
+const deliveredCheckout = {
+  ...checkout,
+  status: "paid",
+  payment_intent_id: "pi_mock_pubg",
+  identity_status: "identity_resolved",
+  delivery_status: "delivery_claimable",
+  delivery: {status: "delivery_claimable", sensitive_content_redacted: true},
+  human_action: {
+    kind: "auth_qr",
+    id: "auth_mock_0376",
+    auth_session_id: "auth_mock_0376",
+    url: "http://127.0.0.1/v1/buyer/auth-sessions/auth_mock_0376?display_token=display_mock_0376",
+    web_url: "http://127.0.0.1/v1/buyer/auth-sessions/auth_mock_0376?display_token=display_mock_0376"
+  }
+};
+
 const intent = {
   payment_intent_id: "pi_mock_pubg",
   payment_attempt_id: "pa_mock_pubg",
@@ -255,7 +269,18 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && url.pathname === "/api/ucp/v1/carts") return writeJSON(res, 201, cart);
   if (req.method === "GET" && url.pathname === "/api/ucp/v1/carts/cart_mock_pubg") return writeJSON(res, 200, cart);
   if (req.method === "POST" && url.pathname === "/api/ucp/v1/checkouts") return writeJSON(res, 202, checkout);
+  if (req.method === "GET" && url.pathname === "/v1/checkouts/chk_mock_pubg") return writeJSON(res, 200, deliveredCheckout);
   if (req.method === "POST" && url.pathname === "/v1/checkouts/chk_mock_pubg/payment-intents") return writeJSON(res, 202, intent);
+  if (req.method === "POST" && url.pathname === "/v1/buyer/auth-sessions/auth_mock_0376/agent-session") {
+    if (url.searchParams.get("display_token") !== "display_mock_0376") return writeJSON(res, 403, {error: "invalid display token"});
+    return writeJSON(res, 200, {
+      buyer_account_id: "ba_mock_0376",
+      agent_device_id: "ad_mock_0376",
+      checkout_id: "chk_mock_pubg",
+      raw_session_token: "sess_mock_0376",
+      sensitive_redacted: true
+    });
+  }
   if (req.method === "POST" && url.pathname === "/v1/buyer/accounts/ba_mock_0376/portal-login-links") {
     if (req.headers.authorization !== "Bearer sess_mock_0376") return writeJSON(res, 401, {error: "missing buyer session"});
     return writeJSON(res, 201, {
@@ -372,6 +397,25 @@ delete credentials.session_token;
 delete credentials.session_token_store;
 delete credentials.session_token_ref;
 fs.writeFileSync(credentialsPath, JSON.stringify(credentials, null, 2), {mode: 0o600});
+JS
+AUTO_SESSION_GRANTS_LIST_OUTPUT=$(HOME="$TMP_HOME" ITPAY_CORE_API_BASE="http://127.0.0.1:$MOCK_PORT" ITP_DISABLE_NATIVE_CREDENTIAL_STORE=1 "$ROOT/bin/itp" buyer vault grants list --checkout chk_mock_pubg --json)
+printf '%s' "$AUTO_SESSION_GRANTS_LIST_OUTPUT" | node -e 'let data="";process.stdin.on("data",c=>data+=c);process.stdin.on("end",()=>{const json=JSON.parse(data); if (json.status !== "agent_read_grants" || !Array.isArray(json.agent_readable_grants) || json.agent_readable_grants[0].agent_read_grant_id !== "arg_mock_038c") process.exit(1);})'
+node -e 'const fs=require("fs"); const credentials=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(credentials.session_token!=="sess_mock_0376" || credentials.session_token_store!=="file") process.exit(1);' "$TMP_HOME/.itp/credentials.json"
+node - <<'JS' "$TMP_HOME/.itp/credentials.json"
+const fs = require("fs");
+const credentialsPath = process.argv[2];
+const credentials = JSON.parse(fs.readFileSync(credentialsPath, "utf8"));
+delete credentials.session_token;
+delete credentials.session_token_store;
+delete credentials.session_token_ref;
+fs.writeFileSync(credentialsPath, JSON.stringify(credentials, null, 2), {mode: 0o600});
+JS
+node - <<'JS' "$TMP_HOME/.itp/config.json"
+const fs = require("fs");
+const configPath = process.argv[2];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+delete config.api_base;
+fs.writeFileSync(configPath, JSON.stringify(config, null, 2), {mode: 0o600});
 JS
 node -e 'const fs=require("fs"); const rows=fs.readFileSync(process.argv[1],"utf8").trim().split(/\n/).map(JSON.parse); const has=(m,p)=>rows.some(r=>r.method===m&&r.path===p); if(!has("POST","/api/ucp/v1/catalog/product")||!has("POST","/api/ucp/v1/carts")||!has("POST","/api/ucp/v1/checkouts")||!has("POST","/v1/checkouts/chk_mock_pubg/payment-intents")) process.exit(1); if(has("POST","/v1/checkouts")) process.exit(1);' "$MOCK_LOG"
 node -e 'const fs=require("fs"); const rows=fs.readFileSync(process.argv[1],"utf8").trim().split(/\n/).map(JSON.parse); const multi=rows.find(r=>r.method==="POST"&&r.path==="/api/ucp/v1/carts"&&Array.isArray(r.body.line_items)&&r.body.line_items.length===2); if(!multi) process.exit(1); if(multi.body.line_items[0].item.id!=="var_pubg_couple_skin_cny20"||multi.body.line_items[0].quantity!==1||multi.body.line_items[1].item.id!=="var_pubg_deluxe_skin_cny40"||multi.body.line_items[1].quantity!==2) process.exit(1);' "$MOCK_LOG"

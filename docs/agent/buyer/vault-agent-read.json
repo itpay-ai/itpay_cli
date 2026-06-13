@@ -10,7 +10,7 @@
     "A checkout/order has delivered a vault artifact and the human granted agent-readable access."
   ],
   "required_state": {
-    "needs": ["authenticated buyer account session", "current agent device binding", "order_id or checkout_id or vault_artifact_id"],
+    "needs": ["checkout_id or authenticated buyer account session", "current agent device binding", "order_id or checkout_id or vault_artifact_id"],
     "must_not_need": ["human portal token", "claim token", "passkey credential", "raw protected payload", "grant id copied by the human"]
   },
   "commands": [
@@ -37,14 +37,16 @@
   ],
   "agent_rules": [
     "Only read through `buyer vault` commands after the human has explicitly approved the agent grant in the ItPay portal.",
+    "Prefer `itp buyer vault grants list --checkout <checkout_id> --json`; the CLI can automatically restore the buyer agent session from the checkout auth handoff when possible.",
     "Do not ask the human to copy or paste `agent_read_grant_id`; discover it with `buyer vault grants list`.",
     "If no grant is returned, tell the human to open their ItPay account portal, reveal with Passkey, choose fields, and confirm one-key agent authorization.",
     "Use only fields returned in the grant view. Do not infer that unreturned fields are accessible.",
-    "If the command returns 401 or buyer_session_invalid, run `itp buyer auth status --json` and ask the human to reauthorize through a normal checkout/account flow."
+    "If the command still returns 401 or buyer_session_invalid after using `--checkout`, run `itp buyer checkout status <checkout_id> --json`, then retry `itp buyer vault grants list --checkout <checkout_id> --json`. Ask the human to reauthorize only if the checkout/auth handoff has expired."
   ],
   "forbidden": [
+    "Do not open, click through, scrape, or automate the human web UI yourself.",
     "Do not open, scrape, or screenshot the human portal to obtain protected content.",
-    "Do not request passkey credentials, portal tokens, claim links, claim tokens, storage refs, provider AppCode, provider keys, or raw payloads.",
+    "Do not request passkey credentials, portal tokens, claim links, claim tokens, auth session IDs, display tokens, session tokens, storage refs, provider AppCode, provider keys, or raw payloads.",
     "Do not use another agent's grant id. Grants are scoped to the exact buyer account session and agent device.",
     "Do not cache selected fields beyond the task context unless the user explicitly asks you to create a local artifact."
   ],

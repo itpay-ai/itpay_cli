@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import QRCode from "qrcode";
 
 const VERSION = "0.1.2";
-const DEFAULT_API_BASE = process.env.ITPAY_API_BASE || process.env.ITPAY_CORE_BASE_URL || process.env.VOLTAGENT_API_BASE || "http://localhost:3000";
+const DEFAULT_API_BASE = process.env.ITPAY_API_BASE || process.env.ITPAY_CORE_BASE_URL || "http://localhost:3000";
 const CONFIG_DIR = path.join(os.homedir(), ".itp");
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 const STATE_PATH = path.join(CONFIG_DIR, "state.json");
@@ -193,15 +193,6 @@ async function main() {
       output({
         version: VERSION,
         commands: [
-          "auth register",
-          "auth register --host gemini --display chat --no-wait --json",
-          "auth login",
-          "auth device start",
-          "auth device poll <auth_id>",
-          "setup --credits 100 --method alipay",
-          "setup --plan credit-300 --method alipay",
-          "setup --plan credit-300 --method alipay --host gemini --display chat --json",
-          "setup --credits 100 --target codex --method alipay --install-runtime",
           "buy var_pubg_couple_skin_cny20 --sandbox --email buyer@example.com --phone +8613800000000 --json",
           "buy var_pubg_couple_skin_cny20 --sandbox --email buyer@example.com --phone +8613800000000 --no-wait --json",
           "buyer catalog search --query 企业工商 --category business_data_api --provider itpay_enterprise_data --json",
@@ -236,30 +227,7 @@ async function main() {
           "resume --json",
           "resume --run-id <run_id> --host gemini --display none --json",
           "runs list|current|show <run_id>|forget <run_id>",
-          "auth status",
-          "account show",
           "account login-link",
-          "account set-password --password-stdin",
-          "plans list",
-          "plans show <plan>",
-          "checkout create --credits 100 --method alipay",
-          "checkout create --plan credit-300 --method alipay --idempotency-key <uuid>",
-          "checkout qr <checkout_id>",
-          "checkout open",
-          "checkout recover <checkout_id>",
-          "checkout list --limit 20",
-          "payment wait <checkout_id> --timeout 120",
-          "balance",
-          "usage --today --model <model>",
-          "grants list",
-          "grants show <grant_id>",
-          "grants install <grant_id> --target codex",
-          "grants revoke <grant_id>",
-          "keys list",
-          "keys rotate --grant <grant_id>",
-          "keys revoke --grant <grant_id>",
-          "token issue --grant <grant_id> --stdout",
-          "sync",
           "skill show",
           "skill show --role buyer --json",
           "skill path --role buyer",
@@ -870,6 +838,7 @@ async function buyer(command, rest, flags) {
     if (subcommand === "grants") {
       const action = rest[1] && !String(rest[1]).startsWith("--") ? rest[1] : "list";
       if (action === "list") {
+        await ensureBuyerSessionForVaultAccess(flags);
         const grants = await listBuyerAgentReadGrants(flags);
         output(buyerRunOutput({
           status: "agent_read_grants",
@@ -881,6 +850,7 @@ async function buyer(command, rest, flags) {
       if (action === "read" || action === "show") {
         const grantID = flags.grant || flags.grant_id || flags.agent_read_grant_id || positional(rest, 2);
         if (!grantID) throw new Error("agent_read_grant_id is required");
+        await ensureBuyerSessionForVaultAccess(flags);
         const view = await readBuyerAgentReadGrant(grantID, flags);
         output(buyerRunOutput({
           status: "agent_read_grant_view",
@@ -891,6 +861,7 @@ async function buyer(command, rest, flags) {
       }
     }
     if (subcommand === "read") {
+      await ensureBuyerSessionForVaultAccess(flags);
       const view = await readBuyerVaultArtifactGrant(flags);
       output(buyerRunOutput({
         status: "agent_read_grant_view",
@@ -1355,6 +1326,35 @@ async function maybeClaimBuyerSessionForCheckout(checkout, flags = {}) {
   if (checkout.identity_status !== "identity_resolved" && !checkout.payment_intent_id) return null;
   const action = checkout.human_action || readCoreAuthAction(checkout.checkout_id);
   return await maybeClaimBuyerSessionFromAuthAction(action, flags);
+}
+
+async function ensureBuyerSessionForVaultAccess(flags = {}) {
+  if (readSessionToken()) return null;
+  const checkoutID =
+    flags.checkout ||
+    flags.checkout_id ||
+    readState().last_core_checkout_id ||
+    readState().last_core_auth_checkout_id;
+  if (checkoutID) {
+    try {
+      const checkout = await getBuyerCheckout(checkoutID, flags);
+      rememberCoreAuthAction(checkout.checkout_id || checkoutID, checkout.human_action);
+      const claimed = await maybeClaimBuyerSessionForCheckout(checkout, { ...flags, quiet: true });
+      if (claimed || readSessionToken()) return claimed;
+    } catch {
+      // Continue with the locally remembered auth action below.
+    }
+    const action = readCoreAuthAction(checkoutID);
+    const claimed = await maybeClaimBuyerSessionFromAuthAction(action, { ...flags, quiet: true });
+    if (claimed || readSessionToken()) return claimed;
+  }
+  const state = readState();
+  const entries = Object.entries(state.core_auth_actions || {});
+  for (const [, action] of entries.reverse()) {
+    const claimed = await maybeClaimBuyerSessionFromAuthAction(action, { ...flags, quiet: true });
+    if (claimed || readSessionToken()) return claimed;
+  }
+  return null;
 }
 
 function parseBuyerAuthActionURL(action) {
@@ -2456,20 +2456,20 @@ function installClaudeCode(grantId, credentials, dryRun) {
 
 function installCodex(grantId, credentials, dryRun) {
   const configPath = path.join(os.homedir(), ".codex", "config.toml");
-  const envPath = path.join(CONFIG_DIR, "voltagent.env");
+  const envPath = path.join(CONFIG_DIR, "itpay.env");
   const existing = readText(configPath, "");
   const block = [
-    'model_provider = "voltagent"',
+    'model_provider = "itpay"',
     'model = "openai-code-default"',
     "",
-    "[model_providers.voltagent]",
-    'name = "VoltaGent"',
+    "[model_providers.itpay]",
+    'name = "ItPay"',
     `base_url = "${escapeTomlString(credentials.openai_base_url)}"`,
-    'env_key = "VOLTAGENT_API_KEY"'
+    'env_key = "ITPAY_API_KEY"'
   ].join("\n");
-  const nextConfig = replaceManagedBlock(existing, "voltagent", block);
+  const nextConfig = replaceManagedBlock(existing, "itpay", block);
   const configWrite = writeTextWithBackup(configPath, nextConfig, 0o600, dryRun);
-  const envWrite = writeTextWithBackup(envPath, `export VOLTAGENT_API_KEY=${quoteShell(credentials.key)}\n`, 0o600, dryRun);
+  const envWrite = writeTextWithBackup(envPath, `export ITPAY_API_KEY=${quoteShell(credentials.key)}\n`, 0o600, dryRun);
   return {
     target: "codex",
     grant_id: grantId,
@@ -2479,7 +2479,7 @@ function installCodex(grantId, credentials, dryRun) {
       { path: envPath, action: envWrite.action, backup_path: envWrite.backup_path || null }
     ],
     warnings: [
-      "Codex reads VOLTAGENT_API_KEY from its process environment; source ~/.itp/voltagent.env before starting Codex if your launcher does not load it."
+      "Codex reads ITPAY_API_KEY from its process environment; source ~/.itp/itpay.env before starting Codex if your launcher does not load it."
     ]
   };
 }
@@ -2489,7 +2489,7 @@ function installOpenClaw(grantId, credentials, dryRun) {
   const current = readJSON(configPath, {});
   current.models = current.models || {};
   current.models.providers = current.models.providers || {};
-  current.models.providers.voltagent = {
+  current.models.providers.itpay = {
     baseUrl: credentials.openai_base_url,
     api: "openai-compatible",
     apiKey: credentials.key,
@@ -2689,7 +2689,7 @@ async function skill(command, flags) {
   if (!command || command === "show" || command === "read") {
     const content = fs.readFileSync(skillPath, "utf8");
     if (flags.json) {
-      output({ skill: role === "voltagent" ? "voltagent" : "itpay-buyer", role, path: skillPath, content });
+      output({ skill: "itpay-buyer", role, path: skillPath, content });
     } else {
       process.stdout.write(content.endsWith("\n") ? content : `${content}\n`);
     }
@@ -2697,7 +2697,7 @@ async function skill(command, flags) {
   }
   if (command === "path") {
     if (flags.json) {
-      output({ skill: role === "voltagent" ? "voltagent" : "itpay-buyer", role, path: skillPath });
+      output({ skill: "itpay-buyer", role, path: skillPath });
     } else {
       process.stdout.write(`${skillPath}\n`);
     }
@@ -2709,7 +2709,6 @@ async function skill(command, flags) {
 function normalizeSkillRole(role) {
   const normalized = String(role || "buyer").trim().toLowerCase();
   if (normalized === "buyer" || normalized === "itpay-buyer") return "buyer";
-  if (normalized === "voltagent" || normalized === "legacy") return "voltagent";
   if (normalized === "merchant" || normalized === "itpay-merchant") {
     throw new Error("merchant skill is not packaged yet; use --role buyer for current external-agent tests");
   }
@@ -2717,8 +2716,8 @@ function normalizeSkillRole(role) {
 }
 
 function resolveSkillPath(role = "buyer") {
-  const skillDirName = role === "voltagent" ? "voltagent" : "itpay-buyer";
-  const envPath = role === "buyer" ? process.env.ITPAY_BUYER_SKILL_PATH : process.env.ITPAY_CLI_SKILL_PATH;
+  const skillDirName = "itpay-buyer";
+  const envPath = process.env.ITPAY_BUYER_SKILL_PATH;
   const candidates = [
     envPath,
     process.env.ITPAY_CLI_SKILL_PATH,
@@ -2771,7 +2770,7 @@ async function doctorModelCheck(target, credentials) {
 function runtimeConfigStatus(target) {
   const paths = {
     "claude-code": [path.join(os.homedir(), ".claude", "settings.json")],
-    codex: [path.join(os.homedir(), ".codex", "config.toml"), path.join(CONFIG_DIR, "voltagent.env")],
+    codex: [path.join(os.homedir(), ".codex", "config.toml"), path.join(CONFIG_DIR, "itpay.env")],
     openclaw: [path.join(os.homedir(), ".openclaw", "config.json")]
   };
   return (paths[target] || []).map((file) => ({
@@ -3989,7 +3988,7 @@ function writeSessionCredentials(response) {
 
 function storeSessionCredential(response) {
   const token = response.session_token;
-  const ref = `voltagent:session:${response.account_id}:${response.device_id}`;
+  const ref = `itpay:session:${response.account_id}:${response.device_id}`;
   const nativeStore = writeNativeSecret(ref, token);
   if (nativeStore.ok) {
     return {
@@ -4071,7 +4070,7 @@ function deleteGrantCredential(grantId) {
 }
 
 function grantSecretRef(grantId) {
-  return `voltagent:${grantId}`;
+  return `itpay:${grantId}`;
 }
 
 function detectNativeCredentialStore() {
@@ -4093,7 +4092,7 @@ function writeNativeSecret(ref, secret) {
         "-a",
         ref,
         "-s",
-        "VoltaGent",
+        "ItPay",
         "-w",
         secret,
         "-U"
@@ -4107,9 +4106,9 @@ function writeNativeSecret(ref, secret) {
     try {
       execFileSync("secret-tool", [
         "store",
-        "--label=VoltaGent",
+        "--label=ItPay",
         "service",
-        "VoltaGent",
+        "ItPay",
         "account",
         ref
       ], { input: secret, stdio: ["pipe", "ignore", "ignore"] });
@@ -4141,7 +4140,7 @@ function readNativeSecret(store, ref) {
         "-a",
         ref,
         "-s",
-        "VoltaGent",
+        "ItPay",
         "-w"
       ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
     }
@@ -4149,7 +4148,7 @@ function readNativeSecret(store, ref) {
       return execFileSync("secret-tool", [
         "lookup",
         "service",
-        "VoltaGent",
+        "ItPay",
         "account",
         ref
       ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
@@ -4168,14 +4167,14 @@ function deleteNativeSecret(store, ref) {
         "-a",
         ref,
         "-s",
-        "VoltaGent"
+        "ItPay"
       ], { stdio: "ignore" });
     }
     if (store === "secret-tool") {
       execFileSync("secret-tool", [
         "clear",
         "service",
-        "VoltaGent",
+        "ItPay",
         "account",
         ref
       ], { stdio: "ignore" });
