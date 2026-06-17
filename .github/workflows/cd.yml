@@ -25,6 +25,13 @@ jobs:
         run: npm run check
 
       - name: Publish to npm
-        run: npm publish --access public
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "@itpay/cli@$VERSION" version &>/dev/null; then
+            echo "Version $VERSION already published — skipping"
+          else
+            npm publish --access public
+            echo "Published @itpay/cli@$VERSION"
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
