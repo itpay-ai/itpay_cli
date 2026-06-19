@@ -6,6 +6,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import QRCode from "qrcode";
 
 const DEFAULT_API_BASE = process.env.ITPAY_API_BASE || process.env.ITPAY_CORE_API_BASE || process.env.ITPAY_CORE_BASE_URL || "https://dev.api.itpay.ai";
 const CONFIG_DIR = path.join(os.homedir(), ".itp");
@@ -3282,9 +3283,15 @@ async function renderHumanAction(action, flags = {}) {
     return renderResult;
   }
 
-  if ((mode === "auto" || mode === "terminal")) {
+  if ((mode === "auto" || mode === "terminal") && shouldRenderTerminalQR(host)) {
+    const qr = await QRCode.toString(action.url, {
+      type: terminalQRType(flags, host),
+      small: true,
+      errorCorrectionLevel: "M"
+    });
     process.stderr.write(`\n${action.title || "Scan with Alipay"}\n`);
     if (action.description) process.stderr.write(`${action.description}\n`);
+    process.stderr.write(`${qr}\n`);
     process.stderr.write(`Alipay action URL: ${action.url}\n`);
     if (action.expires_at) process.stderr.write(`Expires at: ${formatActionTime(action.expires_at)}\n`);
     renderResult.rendered = true;
@@ -3452,6 +3459,19 @@ function persistHumanAction(action, flags = {}) {
   const run = readRun(runId);
   if (!run?.human_action?.id || run.human_action.id !== action.id) return;
   writeRun(mergeRun(run, { human_action: action }));
+}
+
+function shouldRenderTerminalQR(host) {
+  if (process.stderr.isTTY) return true;
+  return ["gemini", "gemini-cli"].includes(host);
+}
+
+function terminalQRType(flags = {}, host = "") {
+  const requested = String(flags.qr_format || process.env.ITP_QR_FORMAT || "").toLowerCase();
+  if (requested === "unicode" || requested === "utf8") return "utf8";
+  if (requested === "ansi" || requested === "terminal") return "terminal";
+  if (["gemini", "gemini-cli"].includes(host)) return "utf8";
+  return "terminal";
 }
 
 function shouldOpenBrowser(flags = {}) {
