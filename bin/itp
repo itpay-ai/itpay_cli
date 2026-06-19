@@ -3706,8 +3706,8 @@ function coreURL(pathname, flags = {}) {
   return `${coreApiBase(flags)}${pathname.startsWith("/") ? "" : "/"}${pathname}`;
 }
 
-function coreApiBase(flags = {}) {
-  const base = flags.api_base || flags.core_api_base || process.env.ITPAY_API_BASE || process.env.ITPAY_CORE_API_BASE || process.env.ITPAY_CORE_BASE_URL || "https://dev.api.itpay.ai";
+function coreApiBase(flags = {}, config = readConfig()) {
+  const base = flags.api_base || flags.core_api_base || process.env.ITPAY_API_BASE || process.env.ITPAY_CORE_API_BASE || process.env.ITPAY_CORE_BASE_URL || config.api_base || "https://dev.api.itpay.ai";
   return String(base).replace(/\/$/, "");
 }
 
