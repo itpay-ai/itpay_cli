@@ -285,14 +285,14 @@ const server = http.createServer(async (req, res) => {
   const body = await readBody(req);
   fs.appendFileSync(logFile, JSON.stringify({method: req.method, path: url.pathname, body}) + "\n");
   if (req.method === "GET" && url.pathname === "/api/itp/plans") return writeJSON(res, 200, plans);
-  if (req.method === "POST" && url.pathname === "/api/ucp/v1/catalog/search") return writeJSON(res, 200, catalogSearch);
-  if (req.method === "POST" && url.pathname === "/api/ucp/v1/catalog/product") return writeJSON(res, 200, product);
-  if (req.method === "POST" && url.pathname === "/api/ucp/v1/carts") return writeJSON(res, 201, cart);
-  if (req.method === "GET" && url.pathname === "/api/ucp/v1/carts/cart_mock_pubg") return writeJSON(res, 200, cart);
-  if (req.method === "POST" && url.pathname === "/api/ucp/v1/checkouts") return writeJSON(res, 202, checkout);
+  if (req.method === "POST" && url.pathname === "/v1/catalog/search") return writeJSON(res, 200, catalogSearch);
+  if (req.method === "POST" && url.pathname === "/v1/catalog/selections/resolve") return writeJSON(res, 200, product);
+  if (req.method === "POST" && url.pathname === "/v1/carts") return writeJSON(res, 201, cart);
+  if (req.method === "GET" && url.pathname === "/v1/carts/cart_mock_pubg") return writeJSON(res, 200, cart);
+  if (req.method === "POST" && url.pathname === "/v1/checkouts") return writeJSON(res, 202, checkout);
   if (req.method === "GET" && url.pathname === "/v1/checkouts/chk_mock_pubg") return writeJSON(res, 200, deliveredCheckout);
   if (req.method === "POST" && url.pathname === "/v1/checkouts/chk_mock_pubg/payment-intents") return writeJSON(res, 202, intent);
-  if (req.method === "POST" && url.pathname === "/v1/buyer/auth-sessions/auth_mock_0376/agent-session") {
+  if (req.method === "POST" && url.pathname === "/v1/session-exchanges/auth-sessions/auth_mock_0376/agent-session") {
     if (url.searchParams.get("display_token") !== "display_mock_0376") return writeJSON(res, 403, {error: "invalid display token"});
     return writeJSON(res, 200, {
       buyer_account_id: "ba_mock_0376",
@@ -302,7 +302,7 @@ const server = http.createServer(async (req, res) => {
       sensitive_redacted: true
     });
   }
-  if (req.method === "POST" && url.pathname === "/v1/buyer/accounts/ba_mock_0376/portal-login-links") {
+  if (req.method === "POST" && url.pathname === "/v1/me/portal-login-links") {
     if (req.headers.authorization !== "Bearer sess_mock_0376") return writeJSON(res, 401, {error: "missing buyer session"});
     return writeJSON(res, 201, {
       login_link_id: "apl_mock_0376",
@@ -314,7 +314,7 @@ const server = http.createServer(async (req, res) => {
       agent_next_actions: ["show_login_link_to_human_only"]
     });
   }
-  if (req.method === "GET" && url.pathname === "/v1/buyer/accounts/ba_mock_0376/auth/status") {
+  if (req.method === "GET" && url.pathname === "/v1/me/auth/status") {
     if (req.headers.authorization !== "Bearer sess_mock_0376") return writeJSON(res, 401, {error: "missing buyer session"});
     return writeJSON(res, 200, {
       buyer_account_id: "ba_mock_0376",
@@ -322,7 +322,7 @@ const server = http.createServer(async (req, res) => {
       sensitive_redacted: true
     });
   }
-  if (req.method === "GET" && url.pathname === "/v1/vault/agent-read-grants") {
+  if (req.method === "GET" && url.pathname === "/v1/me/agent-grants") {
     if (req.headers.authorization !== "Bearer sess_mock_0376") return writeJSON(res, 401, {error: "missing buyer session"});
     return writeJSON(res, 200, {
       agent_readable_grants: [{
@@ -338,7 +338,7 @@ const server = http.createServer(async (req, res) => {
         fields: ["result.data.name"],
         status: "active",
         expires_at: "2026-06-11T16:00:00Z",
-        read_url: "/v1/vault/agent-read-grants/arg_mock_038c/view",
+        read_url: "/v1/me/agent-grants/arg_mock_038c/view",
         agent_next_actions: ["read_agent_grant_view"],
         sensitive_redacted: true
       }],
@@ -349,7 +349,7 @@ const server = http.createServer(async (req, res) => {
       agent_next_actions: ["read_agent_grant_view"]
     });
   }
-  if (req.method === "GET" && url.pathname === "/v1/vault/agent-read-grants/arg_mock_038c/view") {
+  if (req.method === "GET" && url.pathname === "/v1/me/agent-grants/arg_mock_038c/view") {
     if (req.headers.authorization !== "Bearer sess_mock_0376") return writeJSON(res, 401, {error: "missing buyer session"});
     return writeJSON(res, 200, {
       agent_read_grant_id: "arg_mock_038c",
@@ -438,9 +438,9 @@ const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
 delete config.api_base;
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2), {mode: 0o600});
 JS
-node -e 'const fs=require("fs"); const rows=fs.readFileSync(process.argv[1],"utf8").trim().split(/\n/).map(JSON.parse); const has=(m,p)=>rows.some(r=>r.method===m&&r.path===p); if(!has("POST","/api/ucp/v1/catalog/product")||!has("POST","/api/ucp/v1/carts")||!has("POST","/api/ucp/v1/checkouts")||!has("POST","/v1/checkouts/chk_mock_pubg/payment-intents")) process.exit(1); if(has("POST","/v1/checkouts")) process.exit(1);' "$MOCK_LOG"
-node -e 'const fs=require("fs"); const rows=fs.readFileSync(process.argv[1],"utf8").trim().split(/\n/).map(JSON.parse); const multi=rows.find(r=>r.method==="POST"&&r.path==="/api/ucp/v1/carts"&&Array.isArray(r.body.line_items)&&r.body.line_items.length===2); if(!multi) process.exit(1); if(multi.body.line_items[0].item.id!=="var_pubg_couple_skin_cny20"||multi.body.line_items[0].quantity!==1||multi.body.line_items[1].item.id!=="var_pubg_deluxe_skin_cny40"||multi.body.line_items[1].quantity!==2) process.exit(1);' "$MOCK_LOG"
-node -e 'const fs=require("fs"); const rows=fs.readFileSync(process.argv[1],"utf8").trim().split(/\n/).map(JSON.parse); const search=rows.find(r=>r.method==="POST"&&r.path==="/api/ucp/v1/catalog/search"); if(!search) process.exit(1); const f=search.body.filters||{}; if(!Array.isArray(f.categories)||f.categories[0]!=="business_data_api") process.exit(1); if(f["ai.itpay.provider"]!=="itpay_enterprise_data"||f["ai.itpay.service_type"]!=="ai_api"||f["ai.itpay.delivery_mode"]!=="managed_capability"||f["ai.itpay.sensitivity_level"]!=="business_sensitive") process.exit(1); if(!Array.isArray(f["ai.itpay.taxonomy.use_cases"])||f["ai.itpay.taxonomy.use_cases"][0]!=="company_lookup") process.exit(1); if(!Array.isArray(f["ai.itpay.taxonomy.input_facets"])||f["ai.itpay.taxonomy.input_facets"][0]!=="company_name") process.exit(1); if(f["ai.itpay.requires_webauthn_reveal"]!==true) process.exit(1);' "$MOCK_LOG"
+node -e 'const fs=require("fs"); const rows=fs.readFileSync(process.argv[1],"utf8").trim().split(/\n/).map(JSON.parse); const has=(m,p)=>rows.some(r=>r.method===m&&r.path===p); if(!has("POST","/v1/catalog/selections/resolve")||!has("POST","/v1/carts")||!has("POST","/v1/checkouts")||!has("POST","/v1/checkouts/chk_mock_pubg/payment-intents")) process.exit(1); if(has("POST","/api/ucp/v1/checkouts")) process.exit(1);' "$MOCK_LOG"
+node -e 'const fs=require("fs"); const rows=fs.readFileSync(process.argv[1],"utf8").trim().split(/\n/).map(JSON.parse); const multi=rows.find(r=>r.method==="POST"&&r.path==="/v1/carts"&&Array.isArray(r.body.line_items)&&r.body.line_items.length===2); if(!multi) process.exit(1); if(multi.body.line_items[0].item.id!=="var_pubg_couple_skin_cny20"||multi.body.line_items[0].quantity!==1||multi.body.line_items[1].item.id!=="var_pubg_deluxe_skin_cny40"||multi.body.line_items[1].quantity!==2) process.exit(1);' "$MOCK_LOG"
+node -e 'const fs=require("fs"); const rows=fs.readFileSync(process.argv[1],"utf8").trim().split(/\n/).map(JSON.parse); const search=rows.find(r=>r.method==="POST"&&r.path==="/v1/catalog/search"); if(!search) process.exit(1); const f=search.body.filters||{}; if(!Array.isArray(f.categories)||f.categories[0]!=="business_data_api") process.exit(1); if(f["ai.itpay.provider"]!=="itpay_enterprise_data"||f["ai.itpay.service_type"]!=="ai_api"||f["ai.itpay.delivery_mode"]!=="managed_capability"||f["ai.itpay.sensitivity_level"]!=="business_sensitive") process.exit(1); if(!Array.isArray(f["ai.itpay.taxonomy.use_cases"])||f["ai.itpay.taxonomy.use_cases"][0]!=="company_lookup") process.exit(1); if(!Array.isArray(f["ai.itpay.taxonomy.input_facets"])||f["ai.itpay.taxonomy.input_facets"][0]!=="company_name") process.exit(1); if(f["ai.itpay.requires_webauthn_reveal"]!==true) process.exit(1);' "$MOCK_LOG"
 PLANS_ALIAS=$(HOME="$TMP_HOME" ITPAY_API_BASE="http://127.0.0.1:$MOCK_PORT" "$ROOT/bin/itp" plans --json)
 printf '%s' "$PLANS_ALIAS" | node -e 'let data="";process.stdin.on("data",c=>data+=c);process.stdin.on("end",()=>{const json=JSON.parse(data); if (!Array.isArray(json.plans)) process.exit(1);})'
 kill "$MOCK_SERVER_PID" >/dev/null 2>&1 || true
