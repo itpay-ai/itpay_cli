@@ -23,6 +23,7 @@ protocol from this file. Use the CLI docs graph whenever you need details.
 Run these commands before buying:
 
 ```bash
+itp status --refresh --json
 itp docs show quickstart --role buyer --json
 itp docs list --role buyer --json
 ```
@@ -37,6 +38,7 @@ itp docs search "<what you need to know>" --role buyer --json
 
 ```text
 read this skill
+-> run status --refresh and follow next.command if unauthenticated
 -> read quickstart doc
 -> search catalog
 -> explain/recommend a variant
@@ -108,6 +110,9 @@ Refund commands use ItPay shared order state. If `itp buyer refund create`
 returns `policy_risk_confirmation_required`, explain the returned
 `refund_eligibility.policy` and `agent_guidance` to the human first. Only retry
 with `--confirm-policy-risk true` after explicit human confirmation.
+Refund commands require a server-verified buyer session, not a vault grant. If
+the CLI says the buyer session is required or expired, run
+`itp status --refresh --json` and follow the returned `next.command`.
 Current buyer refunds are whole-order only; do not use line-item refund scope.
 If the human cancels a refund before provider or money movement starts, use
 `buyer refund cancel <refund_id> --json`; after cancel, the delivery claim can
