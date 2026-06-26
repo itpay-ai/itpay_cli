@@ -15,6 +15,11 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 mkdir -p "$TMP_HOME/.itp"
+cat >"$TMP_HOME/.itp/config.json" <<'JSON'
+{
+  "api_base": "https://sandbox.itpay.ai"
+}
+JSON
 cat >"$TMP_HOME/.itp/credentials.json" <<'JSON'
 {
   "grant_gr_test": {
@@ -68,6 +73,8 @@ DOCS_SEARCH=$(HOME="$TMP_HOME" "$ROOT/bin/itp" docs search "付款 等待" --rol
 printf '%s' "$DOCS_SEARCH" | node -e 'let data="";process.stdin.on("data",c=>data+=c);process.stdin.on("end",()=>{const json=JSON.parse(data); if (!json.matches.some((match)=>match.topic==="payment-wait")) process.exit(1);})'
 BUYER_AUTH_STATUS=$(HOME="$TMP_HOME" "$ROOT/bin/itp" buyer auth status --json)
 printf '%s' "$BUYER_AUTH_STATUS" | node -e 'let data="";process.stdin.on("data",c=>data+=c);process.stdin.on("end",()=>{const json=JSON.parse(data); if (json.schema_version !== "itp.buyer.v1" || json.auth_required_for_discovery !== false) process.exit(1); if (data.toLowerCase().includes("ops-token") || data.toLowerCase().includes("sandbox_ops_token")) process.exit(1);})'
+DOCTOR_OUTPUT=$(HOME="$TMP_HOME" "$ROOT/bin/itp" doctor --json)
+printf '%s' "$DOCTOR_OUTPUT" | node -e 'let data="";process.stdin.on("data",c=>data+=c);process.stdin.on("end",()=>{const json=JSON.parse(data); if (json.api_base !== "https://dev.api.itpay.ai") process.exit(1);})'
 SNAPSHOT_VERSION_TRAP=$(HOME="$TMP_HOME" "$ROOT/bin/itp" buyer shelf snapshot --version dummy --json 2>/dev/null || true)
 if printf '%s' "$SNAPSHOT_VERSION_TRAP" | grep -q '"version"'; then
   echo "buyer shelf snapshot --version was intercepted by top-level version handler" >&2
