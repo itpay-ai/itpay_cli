@@ -214,7 +214,7 @@ redacted secure delivery status:
 itp buyer catalog search --query 企业工商 --json
 itp buyer cart create --variant var_itpay_enterprise_fuzzy_search_cny01 --input company_name=阿里 --json
 itp buyer checkout create --cart <cart_id> --email <buyer_email> --json
-itp buyer payment wait <payment_intent_id> --json
+itp buyer payment wait <payment_intent_id> --timeout 1 --json
 itp buyer checkout status <checkout_id> --json
 ```
 
@@ -239,7 +239,7 @@ Payment QR rules:
 - Otherwise render the ItPay-hosted `qr_png_url` / `preferred_qr_url`.
 - Use `mobile_wallet_url` only as a human mobile fallback.
 - Do not generate your own QR from payment URLs.
-- In agent app clients, send `human_visible_markdown` to the human first, then run `after_human_visible_markdown.command`.
+- In agent app clients, send `human_visible_markdown` or the relevant `render_plan` output to the human first.
 - If status is `payment_handoff_required`, `next` is the human reply step, not payment wait.
 - Treat only `payment_intent.verified` as payment success.
 

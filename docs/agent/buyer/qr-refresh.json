@@ -21,7 +21,7 @@
     },
     {
       "intent": "continue waiting after refresh",
-      "command": "itp buyer payment wait <payment_intent_id> --json",
+      "command": "itp buyer payment wait <payment_intent_id> --timeout 1 --json",
       "success_signal": "payment_event.event_type == payment_intent.verified"
     }
   ],

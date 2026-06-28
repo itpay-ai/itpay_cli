@@ -17,8 +17,8 @@
   "commands": [
     {
       "intent": "wait for payment verified event",
-      "command": "itp buyer payment wait <payment_intent_id> --qr-shown --json",
-      "success_signal": "response.payment_event.event_type == payment_intent.verified"
+      "command": "itp buyer payment wait <payment_intent_id> --timeout 1 --json",
+      "success_signal": "response.payment_event.event_type is payment_intent.verified or wait.timeout"
     },
     {
       "intent": "resume checkout after verified event",
@@ -27,12 +27,12 @@
     }
   ],
   "agent_rules": [
-    "Start payment wait only after the QR image/link has already been sent to the human; use --qr-shown to confirm that step is complete.",
-    "If you run payment wait without --qr-shown while payment is still pending, CLI returns payment_handoff_required and human_visible_markdown instead of long-polling.",
-    "Payment wait is a recovery loop around the same payment_intent_id, not a one-shot command.",
+    "Start payment status checks only after the QR image/link has already been sent to the human or the human asks to check status.",
+    "If you run payment wait without a short timeout while payment is still pending, CLI returns payment_handoff_required and human_visible_markdown instead of long-polling.",
+    "Payment wait/status check is a recovery loop around the same payment_intent_id, not a one-shot command.",
     "wait.timeout is a heartbeat, not a payment failure.",
-    "In Codex or Claude Code app clients, after showing QR, wait online for a short visible cycle first. If the human still has not paid, explain that the same QR/link remains valid and pause for their reply.",
-    "Continue waiting with the same payment_intent_id unless the user explicitly cancels or asks you to pause.",
+    "In Codex or Claude Code app clients, after showing QR, use a short status check first. If the human still has not paid, explain that the same QR/link remains valid and pause for their reply.",
+    "Continue checking the same payment_intent_id unless the user explicitly cancels or asks you to pause.",
     "If the network drops, the process is interrupted, or there is no response, rerun payment wait with the same payment_intent_id or run checkout status/resume with the same checkout_id.",
     "If status is unclear, tell the human it is unclear and continue querying the same payment_intent_id/checkout_id. Do not create a new checkout.",
     "Payment success is payment_intent.verified only.",

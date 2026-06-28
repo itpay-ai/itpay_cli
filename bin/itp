@@ -109,7 +109,7 @@ async function main() {
           "buyer checkout status <checkout_id> --json",
           "buyer checkout resume <checkout_id> --json",
           "buyer auth status --json",
-          "buyer payment wait <payment_intent_id> --json",
+          "buyer payment wait <payment_intent_id> --timeout 1 --json",
           "buyer payment refresh-qr <payment_intent_id> --reason order-not-found --json",
           "buyer deliveries list --checkout <checkout_id> --json",
           "buyer deliveries show <delivery_id> --checkout <checkout_id> --json",

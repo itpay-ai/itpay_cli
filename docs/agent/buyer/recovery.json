@@ -22,7 +22,7 @@
     },
     {
       "intent": "wait again on the same payment intent",
-      "command": "itp buyer payment wait <payment_intent_id> --json",
+      "command": "itp buyer payment wait <payment_intent_id> --timeout 1 --json",
       "success_signal": "response.payment_event.event_type is payment_intent.verified or still waiting"
     },
     {

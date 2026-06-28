@@ -75,7 +75,7 @@ itp buyer cart add <cart_id> --variant <variant_id> --input key=value --quantity
 itp buyer cart remove <cart_id> --line <cart_line_item_id> --json
 itp buyer checkout create --cart <cart_id> --email <buyer_email> --phone <buyer_phone> --json
 itp buyer checkout resume <checkout_id> --json
-itp buyer payment wait <payment_intent_id> --json
+itp buyer payment wait <payment_intent_id> --timeout 1 --json
 itp buyer checkout status <checkout_id> --json
 itp buyer refund create --order <order_id> --amount-minor <minor_units> --currency CNY --reason buyer_requested --json
 itp buyer refund list --order <order_id> --json
@@ -212,15 +212,14 @@ itp buy <variant_id> --email <buyer_email> --phone <buyer_phone> --display agent
 This keeps JSON output machine-readable while allowing the CLI to prepare a
 local QR image path for clients that cannot render remote SVG reliably. In
 Codex or Claude Code app clients, prefer `--no-wait-payment`: send
-`human_visible_markdown` to the human first, then run
-`after_human_visible_markdown.command`. If the human is on mobile, present
-`mobile_wallet_url` as a clickable human-only fallback; do not convert it into a
-QR.
+`human_visible_markdown` or `render_plan.platforms.codex_app.markdown` to the
+human first. If the human is on mobile, present `mobile_wallet_url` as a
+clickable human-only fallback; do not convert it into a QR.
 
 If a response has `status=payment_handoff_required`, `next` is the user-visible
-reply step, not payment wait. Do not run `buyer payment wait` until the QR/link
-has been sent to the human; then use the returned
-`after_human_visible_markdown.command` with `--qr-shown`.
+reply step, not payment wait. Do not run `buyer payment wait` until the human
+has seen the QR/link and asks to check status; then use
+`after_human_response.check_payment_command`.
 
 For first-purchase auth, treat the returned ItPay authorization entry as a
 single human orchestration entry. It may open Alipay login/registration first
