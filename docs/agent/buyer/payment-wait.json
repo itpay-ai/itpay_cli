@@ -10,9 +10,17 @@
     "The CLI returned agent_wait metadata."
   ],
   "required_state": {
-    "needs": ["payment_intent_id"],
-    "optional": ["cursor"],
-    "must_not_need": ["ops token", "provider query permission", "human text proof"]
+    "needs": [
+      "payment_intent_id"
+    ],
+    "optional": [
+      "cursor"
+    ],
+    "must_not_need": [
+      "ops token",
+      "provider query permission",
+      "human text proof"
+    ]
   },
   "commands": [
     {
@@ -27,6 +35,7 @@
     }
   ],
   "agent_rules": [
+    "If payment wait returns payment_handoff_required, render response.render_plan.selected to the human before running any later status check.",
     "Start payment status checks only after the QR image/link has already been sent to the human or the human asks to check status.",
     "If you run payment wait without a short timeout while payment is still pending, CLI returns payment_handoff_required and human_visible_markdown instead of long-polling.",
     "Payment wait/status check is a recovery loop around the same payment_intent_id, not a one-shot command.",
@@ -57,5 +66,18 @@
       "command": "itp docs show recovery --role buyer --json"
     }
   ],
-  "search_terms": ["wait", "long poll", "timeout", "still waiting", "paid", "payment", "等待", "付款", "付款成功", "没返回", "一直等", "超时"]
+  "search_terms": [
+    "wait",
+    "long poll",
+    "timeout",
+    "still waiting",
+    "paid",
+    "payment",
+    "等待",
+    "付款",
+    "付款成功",
+    "没返回",
+    "一直等",
+    "超时"
+  ]
 }

@@ -10,8 +10,16 @@
     "The agent is unsure which ItPay buyer command should come first."
   ],
   "required_state": {
-    "needs": ["itp CLI available", "buyer delivery email before checkout"],
-    "must_not_need": ["ops token", "claim token", "raw key", "provider raw payload"]
+    "needs": [
+      "itp CLI available",
+      "buyer delivery email before checkout"
+    ],
+    "must_not_need": [
+      "ops token",
+      "claim token",
+      "raw key",
+      "provider raw payload"
+    ]
   },
   "commands": [
     {
@@ -59,7 +67,8 @@
     "If response.status is payment_handoff_required, do not run payment wait from next.command; next is the human-visible reply. Only after the human asks to check payment should you run after_human_response.check_payment_command.",
     "Show the returned payment QR exactly as provided before starting payment wait.",
     "Payment truth comes only from payment_intent.verified.",
-    "Secure delivery goes to the human first; report redacted delivery status only."
+    "Secure delivery goes to the human first; report redacted delivery status only.",
+    "When a response includes render_plan.selected, execute that selected plan first; do not make the model choose a different platform branch or rewrite the payment/auth UI."
   ],
   "forbidden": [
     "Do not call ops commands from the buyer path.",
@@ -95,5 +104,14 @@
       "command": "itp docs show account-portal --role buyer --json"
     }
   ],
-  "search_terms": ["start", "quickstart", "first time", "buyer flow", "how to use itpay", "开始", "第一次", "怎么用"]
+  "search_terms": [
+    "start",
+    "quickstart",
+    "first time",
+    "buyer flow",
+    "how to use itpay",
+    "开始",
+    "第一次",
+    "怎么用"
+  ]
 }

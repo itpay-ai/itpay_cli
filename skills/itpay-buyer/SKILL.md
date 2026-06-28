@@ -211,10 +211,13 @@ itp buy <variant_id> --email <buyer_email> --phone <buyer_phone> --display agent
 
 This keeps JSON output machine-readable while allowing the CLI to prepare a
 local QR image path for clients that cannot render remote SVG reliably. In
-Codex or Claude Code app clients, prefer `--no-wait-payment`: send
-`human_visible_markdown` or `render_plan.platforms.codex_app.markdown` to the
-human first. If the human is on mobile, present `mobile_wallet_url` as a
-clickable human-only fallback; do not convert it into a QR.
+Codex or Claude Code app clients, prefer `--no-wait-payment`: execute
+`render_plan.selected` first. If `selected.markdown` exists, send it exactly to
+the human. If `selected.media` exists, attach the listed image before saying the
+human can scan it. If `selected.links` exists, include the real URL, not just
+the label. If `selected.buttons` exists and the current adapter supports native
+buttons, render them; otherwise fall back to the real URL plus short text. Do
+not invent a table or rewrite the UI plan.
 
 If a response has `status=payment_handoff_required`, `next` is the user-visible
 reply step, not payment wait. Do not run `buyer payment wait` until the human

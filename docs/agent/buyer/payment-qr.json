@@ -11,8 +11,16 @@
     "The human needs to scan with the payment provider."
   ],
   "required_state": {
-    "needs": ["payment_intent_id", "human_action", "qr_png_url/preferred_qr_url or local_qr_path"],
-    "must_not_need": ["raw provider QR", "provider sign", "ops token"]
+    "needs": [
+      "payment_intent_id",
+      "human_action",
+      "qr_png_url/preferred_qr_url or local_qr_path"
+    ],
+    "must_not_need": [
+      "raw provider QR",
+      "provider sign",
+      "ops token"
+    ]
   },
   "commands": [
     {
@@ -33,6 +41,10 @@
     "Payment QR display requires both a valid/saved buyer session and payment_intent_id. If payment_intent_id appears before buyer_session is saved, run buyer checkout resume/status instead of showing payment QR.",
     "Do not stop after showing auth_qr unless the human explicitly asks you to pause. Keep waiting/resuming the same checkout so the post-auth payment handoff can continue.",
     "Do not describe auth_qr as payment success or payment proof. Only payment_intent.verified proves payment.",
+    "If response.render_plan.selected exists, treat it as the final UI render plan for the current host. Execute selected before reading other platform branches.",
+    "Do not rewrite response.render_plan.selected into a custom table. Use selected.text/markdown, selected.media, selected.links, and selected.buttons as provided.",
+    "If selected.links exists, include the real URL. Do not only show the link label.",
+    "If selected.buttons exists but the current adapter cannot render native buttons, degrade to selected.links plus short text; do not fake payment success or skip the status check.",
     "In Codex or Claude Code app clients, send response.human_visible_markdown or response.render_plan.platforms.codex_app.markdown to the human first. Do not start a hidden long wait before the human-visible message is sent.",
     "For Telegram-style message clients, use response.render_plan.platforms.telegram: send photo media first, include links, and expose native buttons for refresh/status when the adapter supports them.",
     "For plain chat clients, show response.human_visible_markdown and stop unless the human asks you to check status or returns with a payment question.",
@@ -68,5 +80,14 @@
       "command": "itp docs show qr-refresh --role buyer --json"
     }
   ],
-  "search_terms": ["qr", "payment qr", "alipay", "scan", "order not found", "二维码", "扫码", "付款码"]
+  "search_terms": [
+    "qr",
+    "payment qr",
+    "alipay",
+    "scan",
+    "order not found",
+    "二维码",
+    "扫码",
+    "付款码"
+  ]
 }
