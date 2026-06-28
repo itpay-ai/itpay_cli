@@ -240,6 +240,7 @@ Payment QR rules:
 - Use `mobile_wallet_url` only as a human mobile fallback.
 - Do not generate your own QR from payment URLs.
 - In agent app clients, execute `render_plan.selected` first. Send its media, text/markdown, real links, and native buttons when the adapter supports them.
+- In OpenClaw Telegram, send `render_plan.selected.openclaw_message` with OpenClaw `message send --media ... --presentation ...`; do not put legacy inline media directives inside human prose.
 - Do not rewrite `render_plan.selected` into a custom table or omit the real URL.
 - If status is `payment_handoff_required`, `next` is the human reply step, not payment wait.
 - Treat only `payment_intent.verified` as payment success.
