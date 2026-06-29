@@ -250,9 +250,9 @@ Payment QR rules:
 - Do not generate your own QR from payment URLs.
 - In OpenClaw Telegram, run root `agent_action.command` or `agent_action.argv` before replying; do not simulate buttons in normal prose.
 - Telegram native buttons require `presentation.blocks[].type="buttons"` with `text/url/callback_data`.
-- For Codex/Claude Code app clients, send root `agent_action.markdown` before any next ItPay command. If you can confirm it is visible to the human, you may then run `after_visible_action.command`; if unsure, stop.
+- For Codex/Claude Code app clients, send root `agent_action.markdown` first; once it is visible in the current chat, run `after_visible_action.command` once by default. Stop only if visibility is uncertain.
 - For terminal clients, run root `agent_action.command` only when the human is directly watching that terminal. Do not use `--host terminal` merely because you invoke `itp` through shell.
-- If status is `payment_handoff_required`, `next` is the human reply step, not payment wait.
+- If status is `payment_handoff_required`, follow `next.type`: Codex/Claude app clients normally send-to-human then wait once; plain chat stops for the human.
 - Treat only `payment_intent.verified` as payment success.
 
 If the human wants the agent to analyze delivered content, the human must reveal

@@ -245,11 +245,11 @@ Codex or Claude Code app clients, send `agent_action.markdown` exactly to the
 current chat. In terminal, run `agent_action.command` only when the human is
 directly watching that terminal.
 
-If a response has `status=payment_handoff_required`, `next` is the user-visible
-reply step, not payment wait. Do not run `buyer payment wait` until the human
-has seen the QR/link. If `after_visible_action.command` exists and you can
-confirm the handoff is visible, you may run it once; if unsure, stop and wait
-for the human.
+If a response has `status=payment_handoff_required`, follow `next.type`.
+For Codex/Claude Code app clients, send `agent_action.markdown` first; once it
+is visible in the current chat, run `after_visible_action.command` once by
+default. Do not run payment wait before the human-visible QR/link is sent. If
+visibility is uncertain, stop and wait for the human.
 
 For first-purchase auth, treat the returned ItPay authorization entry as a
 single human orchestration entry. It may open Alipay login/registration first
